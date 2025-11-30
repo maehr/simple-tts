@@ -10,6 +10,7 @@ Examples:
 """
 
 from dataclasses import dataclass, field
+import warnings
 
 import numpy as np
 
@@ -23,6 +24,7 @@ class TTSConfig:
         speed: Playback speed multiplier.
         device: Device to use ('cpu', 'cuda', 'mps').
         sample_rate: Output audio sample rate in Hz.
+        repo_id: Kokoro model repository ID (e.g., 'hexgrad/Kokoro-82M').
 
     Examples:
         >>> config = TTSConfig()
@@ -39,6 +41,7 @@ class TTSConfig:
     speed: float = 1.1
     device: str = "cpu"
     sample_rate: int = 24000
+    repo_id: str = "hexgrad/Kokoro-82M"
 
 
 @dataclass
@@ -139,15 +142,34 @@ class TTSEngine:
             voice_prefix = self.config.voice.split("_")[0]
             lang_code = voice_prefix[0] if voice_prefix else "a"
 
-            self._pipeline = KPipeline(lang_code=lang_code)
+            # Silence known upstream warnings from PyTorch/Kokoro during model init
+            warnings.filterwarnings(
+                "ignore",
+                message=(
+                    "dropout option adds dropout after all but last recurrent layer"
+                ),
+                category=UserWarning,
+                module=r"torch\.nn\.modules\.rnn",
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message=("`torch.nn.utils.weight_norm` is deprecated in favor of"),
+                category=FutureWarning,
+                module=r"torch\.nn\.utils\.weight_norm",
+            )
 
-            # Load voice tensor
-            self._voice_tensor = self._pipeline.load_voice(self.config.voice)
+            # Prefer explicit repo_id; fall back if not supported by installed kokoro
+            try:
+                self._pipeline = KPipeline(
+                    lang_code=lang_code,
+                    repo_id=self.config.repo_id,
+                )
+            except TypeError:
+                self._pipeline = KPipeline(lang_code=lang_code)
+
             self.is_loaded = True
         except ImportError:
             # Kokoro not installed - use fallback mode for testing
-            import warnings
-
             warnings.warn(
                 "Kokoro TTS library not installed. "
                 "Install with: pip install kokoro>=0.8.4. "
@@ -187,7 +209,7 @@ class TTSEngine:
             audio_segments = []
             generator = self._pipeline(
                 text,
-                voice=self._voice_tensor,
+                voice=self.config.voice,
                 speed=self.config.speed,
             )
             for _, _, audio in generator:
@@ -249,9 +271,7 @@ class TTSEngine:
             'bf_emma'
         """
         self.config.voice = voice
-        # Reload voice if pipeline is loaded
-        if self._pipeline is not None:
-            self._voice_tensor = self._pipeline.load_voice(voice)
+        # For Kokoro, passing the voice ID string is sufficient
 
     def set_speed(self, speed: float) -> None:
         """Set the playback speed.
