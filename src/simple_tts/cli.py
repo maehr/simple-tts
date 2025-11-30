@@ -18,7 +18,17 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from simple_tts.audio import concatenate_audio, get_audio_duration, save_audio
 from simple_tts.converter import extract_text, normalize_text, split_into_chunks
-from simple_tts.language import detect_language, get_voice_for_language
+from simple_tts.dependencies import (
+    check_dependencies,
+    install_dependencies_brew,
+    print_dependency_status,
+)
+from simple_tts.language import (
+    check_language_support,
+    detect_language,
+    get_supported_languages,
+    get_voice_for_language,
+)
 from simple_tts.tts import AudioChunk, TTSConfig, TTSEngine
 
 app = typer.Typer(
@@ -147,6 +157,14 @@ def convert(
     Takes an input document (PDF, DOCX, MD, etc.) and converts it to
     an audio file using Kokoro TTS.
     """
+    # Check system dependencies first
+    if not check_dependencies(console):
+        console.print(
+            "\n[bold yellow]⚠️  Some features may not work without "
+            "all dependencies.[/bold yellow]"
+        )
+        console.print()
+
     # Determine output path
     if output is None:
         output = input_file.with_suffix(f".{format_type}")
@@ -169,13 +187,19 @@ def convert(
             raise typer.Exit(1) from e
         progress.update(task, completed=True)
 
-        # Detect language
+        # Detect language and check support
         task = progress.add_task("Detecting language...", total=None)
         detected_lang = detect_language(text)
+        supported_lang = check_language_support(detected_lang)
+        if detected_lang != supported_lang:
+            console.print(
+                f"[bold yellow]⚠️  Language '{detected_lang}' not supported, "
+                f"using '{supported_lang}'[/bold yellow]"
+            )
         if voice is None:
-            voice = get_voice_for_language(detected_lang)
+            voice = get_voice_for_language(supported_lang)
         progress.update(task, completed=True)
-        console.print(f"[bold green]🌍 Language:[/] {detected_lang} → Voice: {voice}")
+        console.print(f"[bold green]🌍 Language:[/] {supported_lang} → Voice: {voice}")
 
         # Split text into chunks
         task = progress.add_task("Preparing text...", total=None)
@@ -211,6 +235,51 @@ def version() -> None:
     from simple_tts import __version__
 
     console.print(f"simple-tts version {__version__}")
+
+
+@app.command()
+def check_deps() -> None:
+    """Check if all system dependencies are installed."""
+    print_dependency_status(console)
+
+
+@app.command()
+def install_deps(
+    brew: Annotated[
+        bool,
+        typer.Option(
+            "--brew",
+            help="Install dependencies using Homebrew (macOS).",
+        ),
+    ] = False,
+) -> None:
+    """Install missing system dependencies.
+
+    Use --brew to install via Homebrew on macOS.
+    """
+    if brew:
+        success = install_dependencies_brew(console)
+        if not success:
+            raise typer.Exit(1)
+    else:
+        console.print("[bold]To install dependencies:[/bold]")
+        console.print()
+        console.print("[bold]macOS (Homebrew):[/bold]")
+        console.print("  [cyan]simple-tts install-deps --brew[/cyan]")
+        console.print("  or: [cyan]brew install poppler pandoc ffmpeg[/cyan]")
+        console.print()
+        console.print("[bold]Ubuntu/Debian:[/bold]")
+        console.print("  [cyan]sudo apt-get install poppler-utils pandoc ffmpeg[/cyan]")
+
+
+@app.command()
+def languages() -> None:
+    """List supported languages for TTS."""
+    langs = get_supported_languages()
+    console.print("[bold]Supported languages:[/bold]")
+    console.print()
+    for lang in langs:
+        console.print(f"  • {lang}")
 
 
 if __name__ == "__main__":

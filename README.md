@@ -8,6 +8,21 @@ A simple text-to-speech CLI that converts documents to speech using Kokoro TTS.
 - **Automatic language detection**: Detects the language and selects an appropriate voice
 - **Multiple output formats**: Export to M4A, MP3, WAV, or OGG
 - **Adjustable speed**: Control playback speed from 0.5x to 2.0x
+- **Dependency checking**: Built-in checks for system dependencies with install guidance
+
+## Supported Languages
+
+Based on [Kokoro TTS](https://github.com/hexgrad/kokoro), the following languages are supported:
+
+- English (American & British)
+- Spanish
+- French
+- Hindi
+- Italian
+- Japanese
+- Korean
+- Portuguese (Brazilian)
+- Chinese (Mandarin)
 
 ## Installation
 
@@ -18,6 +33,9 @@ Install the required system dependencies:
 ```bash
 # macOS (using Homebrew)
 brew install poppler pandoc ffmpeg
+
+# Or use the built-in installer
+simple-tts install-deps --brew
 
 # Ubuntu/Debian
 sudo apt-get install poppler-utils pandoc ffmpeg
@@ -57,6 +75,24 @@ Available options:
 - `--speed, -s`: Playback speed (0.5-2.0, default: 1.1)
 - `--format, -f`: Output format (m4a, mp3, wav, ogg)
 
+### Check dependencies
+
+```bash
+simple-tts check-deps
+```
+
+### Install dependencies (macOS)
+
+```bash
+simple-tts install-deps --brew
+```
+
+### List supported languages
+
+```bash
+simple-tts languages
+```
+
 ### Show version
 
 ```bash
@@ -74,6 +110,9 @@ pip install -e ".[dev]"
 # Run linting
 ruff check src tests
 ruff format src tests
+
+# Run type checking
+ty check src
 
 # Run tests with coverage
 pytest --cov=simple_tts --cov-report=term-missing
