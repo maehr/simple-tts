@@ -16,12 +16,11 @@ import numpy as np
 import soundfile as sf
 
 
-def concatenate_audio(chunks: list[np.ndarray], sample_rate: int = 24000) -> np.ndarray:
+def concatenate_audio(chunks: list[np.ndarray]) -> np.ndarray:
     """Concatenate multiple audio arrays into one.
 
     Args:
         chunks: List of audio arrays to concatenate.
-        sample_rate: Sample rate of the audio (used for validation).
 
     Returns:
         Single concatenated audio array.
