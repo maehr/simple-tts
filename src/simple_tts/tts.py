@@ -9,8 +9,8 @@ Examples:
     1.1
 """
 
-from dataclasses import dataclass, field
 import warnings
+from dataclasses import dataclass, field
 
 import numpy as np
 
