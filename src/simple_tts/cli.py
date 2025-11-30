@@ -133,6 +133,14 @@ def convert(
             help="Voice to use. Auto-detected from language if not specified.",
         ),
     ] = None,
+    lang: Annotated[
+        Optional[str],
+        typer.Option(
+            "--lang",
+            "-l",
+            help="Language code (e.g., 'en', 'fr'). Auto-detected if not specified.",
+        ),
+    ] = None,
     speed: Annotated[
         float,
         typer.Option(
@@ -187,18 +195,32 @@ def convert(
             raise typer.Exit(1) from e
         progress.update(task, completed=True)
 
-        # Detect language and check support
-        task = progress.add_task("Detecting language...", total=None)
-        detected_lang = detect_language(text)
-        supported_lang = check_language_support(detected_lang)
-        if detected_lang != supported_lang:
-            console.print(
-                f"[bold yellow]⚠️  Language '{detected_lang}' not supported, "
-                f"using '{supported_lang}'[/bold yellow]"
-            )
+        # Determine language - only detect if not provided
+        if lang is not None:
+            # Use provided language, check if supported
+            task = progress.add_task("Checking language...", total=None)
+            supported_lang = check_language_support(lang)
+            if lang != supported_lang:
+                console.print(
+                    f"[bold yellow]⚠️  Language '{lang}' not supported, "
+                    f"using '{supported_lang}'[/bold yellow]"
+                )
+            progress.update(task, completed=True)
+        else:
+            # Detect language from text
+            task = progress.add_task("Detecting language...", total=None)
+            detected_lang = detect_language(text)
+            supported_lang = check_language_support(detected_lang)
+            if detected_lang != supported_lang:
+                console.print(
+                    f"[bold yellow]⚠️  Language '{detected_lang}' not supported, "
+                    f"using '{supported_lang}'[/bold yellow]"
+                )
+            progress.update(task, completed=True)
+
+        # Get voice if not specified
         if voice is None:
             voice = get_voice_for_language(supported_lang)
-        progress.update(task, completed=True)
         console.print(f"[bold green]🌍 Language:[/] {supported_lang} → Voice: {voice}")
 
         # Split text into chunks

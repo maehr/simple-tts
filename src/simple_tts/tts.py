@@ -1,7 +1,6 @@
 """Text-to-Speech engine interface.
 
-This module provides the TTS synthesis functionality. It abstracts the
-TTS backend to allow for different implementations (e.g., Kokoro, local models).
+This module provides the TTS synthesis functionality using Kokoro TTS.
 
 Examples:
     >>> from simple_tts.tts import TTSConfig
@@ -80,10 +79,10 @@ class AudioChunk:
 
 
 class TTSEngine:
-    """Text-to-Speech synthesis engine.
+    """Text-to-Speech synthesis engine using Kokoro TTS.
 
-    This class provides an interface for text-to-speech synthesis.
-    The actual TTS backend (Kokoro) would be loaded here in production.
+    This class provides an interface for text-to-speech synthesis
+    using the Kokoro TTS library.
 
     Attributes:
         config: TTS configuration settings.
@@ -114,7 +113,8 @@ class TTSEngine:
         """
         self.config = config or TTSConfig()
         self.is_loaded = False
-        self._model = None
+        self._pipeline = None
+        self._voice_tensor = None
 
     def load(self) -> None:
         """Load the TTS model.
@@ -130,9 +130,33 @@ class TTSEngine:
             >>> engine.is_loaded
             True
         """
-        # In production, this would load the Kokoro model
-        # For now, we just mark as loaded for the interface
-        self.is_loaded = True
+        try:
+            from kokoro import KPipeline
+
+            # Voice ID format: {lang_prefix}{gender}_{name}
+            # e.g., "af_bella" -> lang_code "a" (American English)
+            # Extract language code from voice ID prefix (before underscore)
+            voice_prefix = self.config.voice.split("_")[0]
+            lang_code = voice_prefix[0] if voice_prefix else "a"
+
+            self._pipeline = KPipeline(lang_code=lang_code)
+
+            # Load voice tensor
+            self._voice_tensor = self._pipeline.load_voice(self.config.voice)
+            self.is_loaded = True
+        except ImportError:
+            # Kokoro not installed - use fallback mode for testing
+            import warnings
+
+            warnings.warn(
+                "Kokoro TTS library not installed. "
+                "Install with: pip install kokoro>=0.8.4. "
+                "Using silent audio fallback.",
+                UserWarning,
+                stacklevel=2,
+            )
+            self.is_loaded = True
+            self._pipeline = None
 
     def synthesize(self, text: str) -> AudioChunk:
         """Synthesize speech from text.
@@ -158,12 +182,27 @@ class TTSEngine:
         if not self.is_loaded:
             raise RuntimeError("TTS model not loaded. Call load() first.")
 
-        # In production, this would use Kokoro for synthesis
-        # For now, return a placeholder audio chunk
-        # Generate a simple sine wave for testing
-        duration = len(text) * 0.05  # ~50ms per character
-        t = np.linspace(0, duration, int(self.config.sample_rate * duration))
-        audio = np.sin(2 * np.pi * 440 * t) * 0.5  # 440Hz tone
+        if self._pipeline is not None:
+            # Use Kokoro TTS
+            audio_segments = []
+            generator = self._pipeline(
+                text,
+                voice=self._voice_tensor,
+                speed=self.config.speed,
+            )
+            for _, _, audio in generator:
+                audio_segments.append(audio)
+
+            if audio_segments:
+                audio = np.concatenate(audio_segments)
+            else:
+                audio = np.array([], dtype=np.float32)
+        else:
+            # Fallback: generate silence with correct duration estimate
+            # This is only used when kokoro is not installed (testing)
+            duration = len(text) * 0.05  # ~50ms per character
+            num_samples = int(self.config.sample_rate * duration)
+            audio = np.zeros(num_samples, dtype=np.float32)
 
         return AudioChunk(
             data=audio.astype(np.float32), sample_rate=self.config.sample_rate
@@ -210,6 +249,9 @@ class TTSEngine:
             'bf_emma'
         """
         self.config.voice = voice
+        # Reload voice if pipeline is loaded
+        if self._pipeline is not None:
+            self._voice_tensor = self._pipeline.load_voice(voice)
 
     def set_speed(self, speed: float) -> None:
         """Set the playback speed.
