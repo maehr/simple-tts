@@ -10,6 +10,7 @@ Examples:
 """
 
 import subprocess
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -181,8 +182,6 @@ def save_audio(
         save_audio_wav(audio, output_path, sample_rate)
     else:
         # Save as WAV first, then encode
-        import tempfile
-
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             tmp_path = Path(tmp.name)
 

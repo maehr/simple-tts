@@ -78,14 +78,14 @@ def validate_input_file(file_path: Path) -> None:
 def validate_speed(speed: float) -> float:
     """Validate the speed parameter.
 
+    Note: Typer's min/max constraints handle the actual validation.
+    This function is kept for API consistency and testing.
+
     Args:
         speed: Speed multiplier to validate.
 
     Returns:
         Validated speed value.
-
-    Raises:
-        typer.BadParameter: If speed is out of valid range.
 
     Examples:
         >>> validate_speed(1.0)
@@ -93,8 +93,6 @@ def validate_speed(speed: float) -> float:
         >>> validate_speed(1.5)
         1.5
     """
-    if speed < 0.5 or speed > 2.0:
-        raise typer.BadParameter("Speed must be between 0.5 and 2.0")
     return speed
 
 
