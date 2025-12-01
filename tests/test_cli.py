@@ -84,9 +84,7 @@ class TestCLIConvert:
 
     def test_invalid_voice_rejected(self):
         """Test that invalid voice is rejected."""
-        result = runner.invoke(
-            app, ["convert", "test.txt", "--voice", "invalid_voice"]
-        )
+        result = runner.invoke(app, ["convert", "test.txt", "--voice", "invalid_voice"])
         assert result.exit_code != 0
 
 
