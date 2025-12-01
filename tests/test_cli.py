@@ -2,7 +2,7 @@
 
 from typer.testing import CliRunner
 
-from simple_tts.cli import app, format_duration, validate_speed
+from simple_tts.cli import app, format_duration, format_eta, validate_speed
 
 runner = CliRunner()
 
@@ -25,6 +25,26 @@ class TestFormatDuration:
     def test_handles_zero(self):
         """Test handling of zero duration."""
         assert format_duration(0) == "0s"
+
+
+class TestFormatEta:
+    """Tests for format_eta function."""
+
+    def test_formats_seconds(self):
+        """Test formatting of ETA in seconds."""
+        assert format_eta(30) == "~30s remaining"
+
+    def test_formats_minutes_and_seconds(self):
+        """Test formatting of ETA with minutes."""
+        assert format_eta(90) == "~1m 30s remaining"
+
+    def test_handles_zero(self):
+        """Test handling of zero ETA."""
+        assert format_eta(0) == "almost done"
+
+    def test_handles_negative(self):
+        """Test handling of negative ETA."""
+        assert format_eta(-10) == "almost done"
 
 
 class TestValidateSpeed:
@@ -65,3 +85,14 @@ class TestCLIConvert:
         result = runner.invoke(app, ["convert", "--help"])
         assert result.exit_code == 0
         assert "Input file" in result.stdout
+
+    def test_convert_has_no_checkpoint_option(self):
+        """Test that convert has --no-checkpoint option."""
+        import re
+
+        result = runner.invoke(app, ["convert", "--help"])
+        assert result.exit_code == 0
+        # Strip ANSI escape codes and check for the option text
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+        clean_output = ansi_escape.sub("", result.stdout)
+        assert "--no-checkpoint" in clean_output

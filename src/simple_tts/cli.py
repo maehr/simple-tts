@@ -9,12 +9,23 @@ Examples:
     '2m 5s'
 """
 
+import time
 from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+from rich.table import Table
 
 from simple_tts.audio import concatenate_audio, get_audio_duration, save_audio
 from simple_tts.converter import extract_text, normalize_text, split_into_chunks
@@ -70,6 +81,26 @@ def format_duration(seconds: float) -> str:
     return " ".join(parts)
 
 
+def format_eta(seconds: float) -> str:
+    """Format estimated time remaining.
+
+    Args:
+        seconds: Estimated seconds remaining.
+
+    Returns:
+        Formatted ETA string.
+
+    Examples:
+        >>> format_eta(90)
+        '~1m 30s remaining'
+        >>> format_eta(30)
+        '~30s remaining'
+    """
+    if seconds <= 0:
+        return "almost done"
+    return f"~{format_duration(seconds)} remaining"
+
+
 def validate_input_file(file_path: Path) -> None:
     """Validate that the input file exists and is readable.
 
@@ -104,6 +135,65 @@ def validate_speed(speed: float) -> float:
         1.5
     """
     return speed
+
+
+def display_checkpoint(
+    input_file: Path,
+    output: Path,
+    voice: str,
+    lang: str,
+    speed: float,
+    format_type: str,
+    chunks: list[str],
+    text_length: int,
+) -> None:
+    """Display checkpoint information before TTS inference.
+
+    Args:
+        input_file: Path to input file.
+        output: Path to output file.
+        voice: Voice ID to use.
+        lang: Language code.
+        speed: Speed multiplier.
+        format_type: Output format.
+        chunks: List of text chunks.
+        text_length: Total text length in characters.
+    """
+    # Create configuration table
+    config_table = Table(title="TTS Configuration", show_header=False)
+    config_table.add_column("Parameter", style="cyan")
+    config_table.add_column("Value", style="green")
+
+    config_table.add_row("Input File", str(input_file))
+    config_table.add_row("Output File", str(output))
+    config_table.add_row("Language", lang)
+    config_table.add_row("Voice", voice)
+    config_table.add_row("Speed", f"{speed}x")
+    config_table.add_row("Format", format_type)
+    config_table.add_row("Text Length", f"{text_length:,} characters")
+    config_table.add_row("Chunks", str(len(chunks)))
+
+    console.print()
+    console.print(config_table)
+
+    # Display chunk details
+    console.print()
+    chunk_table = Table(title="Text Chunks Preview")
+    chunk_table.add_column("#", style="dim", width=4)
+    chunk_table.add_column("Length", style="cyan", width=8)
+    chunk_table.add_column("Preview", style="white", overflow="ellipsis")
+
+    for i, chunk in enumerate(chunks[:10]):  # Show first 10 chunks
+        preview = chunk[:80].replace("\n", " ")
+        if len(chunk) > 80:
+            preview += "..."
+        chunk_table.add_row(str(i + 1), str(len(chunk)), preview)
+
+    if len(chunks) > 10:
+        chunk_table.add_row("...", "...", f"({len(chunks) - 10} more chunks)")
+
+    console.print(chunk_table)
+    console.print()
 
 
 @app.command()
@@ -159,12 +249,22 @@ def convert(
             help="Output format (m4a, mp3, wav, ogg).",
         ),
     ] = "m4a",
+    no_checkpoint: Annotated[
+        bool,
+        typer.Option(
+            "--no-checkpoint",
+            help="Skip the checkpoint display before TTS inference.",
+        ),
+    ] = False,
 ) -> None:
     """Convert a document to speech.
 
     Takes an input document (PDF, DOCX, MD, etc.) and converts it to
     an audio file using Kokoro TTS.
     """
+    total_start_time = time.time()
+    step_times: dict[str, float] = {}
+
     # Check system dependencies first
     if not check_dependencies(console):
         console.print(
@@ -193,24 +293,37 @@ def convert(
     else:
         console.print("[bold blue]🌍 Language:[/] not specified; will detect from text")
 
+    # Create progress bar with time tracking
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        TextColumn("•"),
+        TimeRemainingColumn(),
         console=console,
     ) as progress:
         # Extract text
-        task = progress.add_task("Extracting text...", total=None)
+        step_start = time.time()
+        task = progress.add_task("Extracting text...", total=100)
         try:
             text = extract_text(input_file)
             text = normalize_text(text)
         except Exception as e:
             console.print(f"[bold red]Error:[/] {e}")
             raise typer.Exit(1) from e
-        progress.update(task, completed=True)
+        progress.update(task, completed=100)
+        step_times["extract"] = time.time() - step_start
+        console.print(
+            f"[dim]  └─ Extracted {len(text):,} characters "
+            f"in {format_duration(step_times['extract'])}[/dim]"
+        )
 
         # Detect language if not provided
         if supported_lang is None:
-            task = progress.add_task("Detecting language...", total=None)
+            step_start = time.time()
+            task = progress.add_task("Detecting language...", total=100)
             detected_lang = detect_language(text)
             supported_lang = check_language_support(detected_lang)
             if detected_lang != supported_lang:
@@ -218,8 +331,12 @@ def convert(
                     f"[bold yellow]⚠️  Language '{detected_lang}' not supported, "
                     f"using '{supported_lang}'[/bold yellow]"
                 )
-            progress.update(task, completed=True)
-            console.print(f"[bold green]🌍 Language:[/] {supported_lang}")
+            progress.update(task, completed=100)
+            step_times["detect"] = time.time() - step_start
+            console.print(
+                f"[bold green]🌍 Language:[/] {supported_lang} "
+                f"[dim](detected in {format_duration(step_times['detect'])})[/dim]"
+            )
 
         # Get voice if not specified
         if voice is None:
@@ -228,31 +345,118 @@ def convert(
         console.print(f"[bold green]🗣️ Voice:[/] {voice}")
 
         # Split text into chunks
-        task = progress.add_task("Preparing text...", total=None)
+        step_start = time.time()
+        task = progress.add_task("Preparing text...", total=100)
         chunks = split_into_chunks(text)
-        progress.update(task, completed=True)
-        console.print(f"[bold green]📝 Chunks:[/] {len(chunks)}")
+        progress.update(task, completed=100)
+        step_times["split"] = time.time() - step_start
+        console.print(
+            f"[bold green]📝 Chunks:[/] {len(chunks)} "
+            f"[dim](prepared in {format_duration(step_times['split'])})[/dim]"
+        )
 
+    # Display checkpoint if not skipped
+    if not no_checkpoint:
+        display_checkpoint(
+            input_file=input_file,
+            output=output,
+            voice=voice,
+            lang=supported_lang,
+            speed=speed,
+            format_type=format_type,
+            chunks=chunks,
+            text_length=len(text),
+        )
+
+        # Ask for confirmation
+        console.print(
+            Panel(
+                "[bold]Ready to start TTS inference.[/bold]\n"
+                "Press [cyan]Enter[/cyan] to continue or [red]Ctrl+C[/red] to cancel.",
+                title="Checkpoint",
+                border_style="blue",
+            )
+        )
+        try:
+            input()
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Cancelled by user.[/yellow]")
+            raise typer.Exit(0) from None
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        TextColumn("•"),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
         # Initialize TTS engine
-        task = progress.add_task("Loading TTS model...", total=None)
+        step_start = time.time()
+        task = progress.add_task("Loading TTS model...", total=100)
         config = TTSConfig(voice=voice, speed=speed)
         engine = TTSEngine(config)
         engine.load()
-        progress.update(task, completed=True)
+        progress.update(task, completed=100)
+        step_times["load"] = time.time() - step_start
+        console.print(
+            f"[dim]  └─ Model loaded in {format_duration(step_times['load'])}[/dim]"
+        )
 
-        # Synthesize audio
-        task = progress.add_task("Synthesizing speech...", total=None)
-        audio_chunks: list[AudioChunk] = engine.synthesize_stream(chunks)
-        progress.update(task, completed=True)
+        # Synthesize audio with progress tracking
+        step_start = time.time()
+        task = progress.add_task(
+            f"Synthesizing speech (0/{len(chunks)} chunks)...",
+            total=len(chunks),
+        )
+        audio_chunks: list[AudioChunk] = []
+
+        for i, chunk in enumerate(chunks):
+            audio_chunk = engine.synthesize(chunk)
+            audio_chunks.append(audio_chunk)
+            progress.update(task, advance=1)
+            progress.update(
+                task,
+                description=f"Synthesizing speech ({i + 1}/{len(chunks)} chunks)...",
+            )
+
+        step_times["synthesize"] = time.time() - step_start
+        console.print(
+            f"[dim]  └─ Synthesized {len(chunks)} chunks "
+            f"in {format_duration(step_times['synthesize'])}[/dim]"
+        )
 
         # Concatenate and save
-        task = progress.add_task("Saving audio...", total=None)
+        step_start = time.time()
+        task = progress.add_task("Saving audio...", total=100)
         audio_data = concatenate_audio([chunk.data for chunk in audio_chunks])
         save_audio(audio_data, output, sample_rate=config.sample_rate)
-        progress.update(task, completed=True)
+        progress.update(task, completed=100)
+        step_times["save"] = time.time() - step_start
+        console.print(f"[dim]  └─ Saved in {format_duration(step_times['save'])}[/dim]")
 
+    # Final summary
+    total_time = time.time() - total_start_time
     duration = get_audio_duration(audio_data, config.sample_rate)
-    console.print(f"[bold green]✅ Done![/] Duration: {format_duration(duration)}")
+
+    console.print()
+    summary_table = Table(title="Summary", show_header=False)
+    summary_table.add_column("Metric", style="cyan")
+    summary_table.add_column("Value", style="green")
+
+    summary_table.add_row("Output File", str(output))
+    summary_table.add_row("Audio Duration", format_duration(duration))
+    summary_table.add_row("Processing Time", format_duration(total_time))
+    if total_time > 0:
+        speed_ratio = f"{duration / total_time:.1f}x realtime"
+    else:
+        speed_ratio = "N/A"
+    summary_table.add_row("Speed Ratio", speed_ratio)
+
+    console.print(summary_table)
+    console.print(f"\n[bold green]✅ Done![/] Duration: {format_duration(duration)}")
 
 
 @app.command()
