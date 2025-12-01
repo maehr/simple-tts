@@ -48,7 +48,7 @@ def load_tts(voice: str = "af_bella") -> object | None:
             category=FutureWarning,
         )
 
-        return KPipeline(lang_code=lang_code)
+        return KPipeline(lang_code=lang_code, repo_id="hexgrad/Kokoro-82M")
     except ImportError:
         warnings.warn(
             "Kokoro TTS not installed. Install with: pip install kokoro>=0.8.4",

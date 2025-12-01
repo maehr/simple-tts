@@ -433,14 +433,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a2/55/8f8cab2afd404cf578136ef2cc5dfb50baa1761b68c9da1fb1e4eed343c9/docopt-0.6.2.tar.gz", hash = "sha256:49b3a825280bd66b3aa83585ef59c4a8c82f2c8a522dbe754a8bc8d08c85c491", size = 25901, upload-time = "2014-06-16T11:18:57.406Z" }
 
 [[package]]
-name = "en-core-web-sm"
-version = "3.8.0"
-source = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
-wheels = [
-    { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl", hash = "sha256:1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85" },
-]
-
-[[package]]
 name = "espeakng-loader"
 version = "0.2.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1599,12 +1591,10 @@ name = "simple-tts"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "en-core-web-sm" },
     { name = "kokoro" },
     { name = "numpy" },
     { name = "rich" },
     { name = "soundfile" },
-    { name = "spacy" },
     { name = "typer" },
 ]
 
@@ -1626,7 +1616,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "en-core-web-sm", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" },
     { name = "kokoro", specifier = ">=0.8.4" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
@@ -1634,7 +1623,6 @@ requires-dist = [
     { name = "rich", specifier = ">=13.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "soundfile", specifier = ">=0.12.0" },
-    { name = "spacy", specifier = ">=3.0.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a3" },
     { name = "typer", specifier = ">=0.9.0" },
 ]
