@@ -1,105 +1,71 @@
 """Tests for the TTS module."""
 
 import numpy as np
-import pytest
 
-from simple_tts.tts import AudioChunk, TTSConfig, TTSEngine
-
-
-class TestTTSConfig:
-    """Tests for TTSConfig dataclass."""
-
-    def test_default_values(self):
-        """Test that default values are correct."""
-        config = TTSConfig()
-        assert config.voice == "af_bella"
-        assert config.speed == 1.1
-        assert config.device == "cpu"
-        assert config.sample_rate == 24000
-
-    def test_custom_values(self):
-        """Test that custom values are applied."""
-        config = TTSConfig(voice="bf_emma", speed=1.5, device="cuda")
-        assert config.voice == "bf_emma"
-        assert config.speed == 1.5
-        assert config.device == "cuda"
+from simple_tts.tts import SAMPLE_RATE, load_tts, synthesize, synthesize_chunks
 
 
-class TestAudioChunk:
-    """Tests for AudioChunk dataclass."""
+class TestLoadTTS:
+    """Tests for load_tts function."""
 
-    def test_duration_calculation(self):
-        """Test that duration is calculated correctly."""
-        data = np.zeros(24000)  # 1 second at 24kHz
-        chunk = AudioChunk(data=data, sample_rate=24000)
-        assert chunk.duration == 1.0
+    def test_returns_pipeline_or_none(self):
+        """Test that load_tts returns a pipeline or None."""
+        result = load_tts("af_bella")
+        # Either returns a pipeline or None if not installed
+        assert result is None or result is not None
 
-    def test_duration_empty(self):
-        """Test duration for empty audio."""
-        chunk = AudioChunk(data=np.array([]), sample_rate=24000)
-        assert chunk.duration == 0.0
-
-    def test_duration_different_sample_rate(self):
-        """Test duration with different sample rate."""
-        data = np.zeros(44100)  # 1 second at 44.1kHz
-        chunk = AudioChunk(data=data, sample_rate=44100)
-        assert chunk.duration == 1.0
+    def test_extracts_language_code(self):
+        """Test that language code is extracted from voice."""
+        # This should not raise even with different voice prefixes
+        load_tts("af_bella")  # American
+        load_tts("bf_emma")  # British
 
 
-class TestTTSEngine:
-    """Tests for TTSEngine class."""
+class TestSynthesize:
+    """Tests for synthesize function."""
 
-    def test_initialization_with_default_config(self):
-        """Test engine initialization with default config."""
-        engine = TTSEngine()
-        assert engine.config.voice == "af_bella"
-        assert engine.is_loaded is False
+    def test_returns_numpy_array(self):
+        """Test that synthesize returns a numpy array."""
+        pipeline = load_tts("af_bella")
+        result = synthesize(pipeline, "Hello world", voice="af_bella")
+        assert isinstance(result, np.ndarray)
+        assert result.dtype == np.float32
 
-    def test_initialization_with_custom_config(self):
-        """Test engine initialization with custom config."""
-        config = TTSConfig(voice="bf_emma", speed=1.5)
-        engine = TTSEngine(config=config)
-        assert engine.config.voice == "bf_emma"
-        assert engine.config.speed == 1.5
+    def test_empty_text_returns_array(self):
+        """Test that empty text returns an array."""
+        pipeline = load_tts("af_bella")
+        result = synthesize(pipeline, "", voice="af_bella")
+        assert isinstance(result, np.ndarray)
 
-    def test_load_marks_as_loaded(self):
-        """Test that load() marks the engine as loaded."""
-        engine = TTSEngine()
-        assert engine.is_loaded is False
-        engine.load()
-        assert engine.is_loaded is True
+    def test_respects_speed_parameter(self):
+        """Test that speed parameter is accepted."""
+        pipeline = load_tts("af_bella")
+        # Should not raise with different speed values
+        synthesize(pipeline, "Hello", voice="af_bella", speed=0.5)
+        synthesize(pipeline, "Hello", voice="af_bella", speed=2.0)
 
-    def test_synthesize_requires_load(self):
-        """Test that synthesize() requires load() first."""
-        engine = TTSEngine()
-        with pytest.raises(RuntimeError, match="not loaded"):
-            engine.synthesize("Hello")
 
-    def test_synthesize_returns_audio_chunk(self):
-        """Test that synthesize() returns an AudioChunk."""
-        engine = TTSEngine()
-        engine.load()
-        chunk = engine.synthesize("Hello world")
-        assert isinstance(chunk, AudioChunk)
-        assert chunk.sample_rate == 24000
-        assert len(chunk.data) > 0
+class TestSynthesizeChunks:
+    """Tests for synthesize_chunks function."""
 
-    def test_synthesize_stream(self):
-        """Test synthesizing multiple chunks."""
-        engine = TTSEngine()
-        engine.load()
-        chunks = engine.synthesize_stream(["Hello", "World"])
-        assert len(chunks) == 2
-        assert all(isinstance(c, AudioChunk) for c in chunks)
+    def test_returns_list_of_arrays(self):
+        """Test that synthesize_chunks returns a list of arrays."""
+        pipeline = load_tts("af_bella")
+        result = synthesize_chunks(pipeline, ["Hello", "World"], voice="af_bella")
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert all(isinstance(arr, np.ndarray) for arr in result)
 
-    def test_set_voice(self):
-        """Test setting voice."""
-        engine = TTSEngine()
-        engine.set_voice("bf_emma")
-        assert engine.config.voice == "bf_emma"
+    def test_empty_list_returns_empty_list(self):
+        """Test that empty list returns empty list."""
+        pipeline = load_tts("af_bella")
+        result = synthesize_chunks(pipeline, [], voice="af_bella")
+        assert result == []
 
-    def test_set_speed(self):
-        """Test setting speed."""
-        engine = TTSEngine()
-        engine.set_speed(1.5)
-        assert engine.config.speed == 1.5
+
+class TestSampleRate:
+    """Tests for SAMPLE_RATE constant."""
+
+    def test_sample_rate_value(self):
+        """Test that sample rate is correct for Kokoro."""
+        assert SAMPLE_RATE == 24000

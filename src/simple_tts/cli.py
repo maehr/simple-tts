@@ -1,12 +1,11 @@
 """Command-line interface for simple-tts.
 
-This module provides the CLI entry point for the simple-tts application,
-built using Typer for argument parsing and Rich for visual output.
+A simple CLI for converting documents to speech using Kokoro TTS.
 
-Examples:
-    >>> from simple_tts.cli import format_duration
-    >>> format_duration(125.5)
-    '2m 5s'
+Example:
+    $ simple-tts convert document.pdf --voice af_bella
+    $ simple-tts voices
+    $ simple-tts check-deps
 """
 
 import time
@@ -34,13 +33,8 @@ from simple_tts.dependencies import (
     install_dependencies_brew,
     print_dependency_status,
 )
-from simple_tts.language import (
-    check_language_support,
-    detect_language,
-    get_supported_languages,
-    get_voice_for_language,
-)
-from simple_tts.tts import AudioChunk, TTSConfig, TTSEngine
+from simple_tts.tts import load_tts, synthesize
+from simple_tts.voices import VOICES, get_voice_info
 
 app = typer.Typer(
     name="simple-tts",
@@ -51,13 +45,7 @@ console = Console()
 
 
 def format_duration(seconds: float) -> str:
-    """Format a duration in seconds to a human-readable string.
-
-    Args:
-        seconds: Duration in seconds.
-
-    Returns:
-        Formatted duration string.
+    """Format seconds as human-readable duration.
 
     Examples:
         >>> format_duration(65)
@@ -81,93 +69,25 @@ def format_duration(seconds: float) -> str:
     return " ".join(parts)
 
 
-def format_eta(seconds: float) -> str:
-    """Format estimated time remaining.
-
-    Args:
-        seconds: Estimated seconds remaining.
-
-    Returns:
-        Formatted ETA string.
-
-    Examples:
-        >>> format_eta(90)
-        '~1m 30s remaining'
-        >>> format_eta(30)
-        '~30s remaining'
-    """
-    if seconds <= 0:
-        return "almost done"
-    return f"~{format_duration(seconds)} remaining"
-
-
-def validate_input_file(file_path: Path) -> None:
-    """Validate that the input file exists and is readable.
-
-    Args:
-        file_path: Path to the input file.
-
-    Raises:
-        typer.BadParameter: If the file doesn't exist or is not readable.
-    """
-    if not file_path.exists():
-        raise typer.BadParameter(f"File not found: {file_path}")
-    if not file_path.is_file():
-        raise typer.BadParameter(f"Not a file: {file_path}")
-
-
-def validate_speed(speed: float) -> float:
-    """Validate the speed parameter.
-
-    Note: Typer's min/max constraints handle the actual validation.
-    This function is kept for API consistency and testing.
-
-    Args:
-        speed: Speed multiplier to validate.
-
-    Returns:
-        Validated speed value.
-
-    Examples:
-        >>> validate_speed(1.0)
-        1.0
-        >>> validate_speed(1.5)
-        1.5
-    """
-    return speed
-
-
 def display_checkpoint(
     input_file: Path,
     output: Path,
     voice: str,
-    lang: str,
     speed: float,
     format_type: str,
     chunks: list[str],
     text_length: int,
 ) -> None:
-    """Display checkpoint information before TTS inference.
+    """Display checkpoint before TTS inference."""
+    voice_info = get_voice_info(voice)
 
-    Args:
-        input_file: Path to input file.
-        output: Path to output file.
-        voice: Voice ID to use.
-        lang: Language code.
-        speed: Speed multiplier.
-        format_type: Output format.
-        chunks: List of text chunks.
-        text_length: Total text length in characters.
-    """
-    # Create configuration table
     config_table = Table(title="TTS Configuration", show_header=False)
     config_table.add_column("Parameter", style="cyan")
     config_table.add_column("Value", style="green")
 
     config_table.add_row("Input File", str(input_file))
     config_table.add_row("Output File", str(output))
-    config_table.add_row("Language", lang)
-    config_table.add_row("Voice", voice)
+    config_table.add_row("Voice", f"{voice} ({voice_info['description']})")
     config_table.add_row("Speed", f"{speed}x")
     config_table.add_row("Format", format_type)
     config_table.add_row("Text Length", f"{text_length:,} characters")
@@ -176,14 +96,14 @@ def display_checkpoint(
     console.print()
     console.print(config_table)
 
-    # Display chunk details
+    # Show first 10 chunks
     console.print()
     chunk_table = Table(title="Text Chunks Preview")
     chunk_table.add_column("#", style="dim", width=4)
     chunk_table.add_column("Length", style="cyan", width=8)
     chunk_table.add_column("Preview", style="white", overflow="ellipsis")
 
-    for i, chunk in enumerate(chunks[:10]):  # Show first 10 chunks
+    for i, chunk in enumerate(chunks[:10]):
         preview = chunk[:80].replace("\n", " ")
         if len(chunk) > 80:
             preview += "..."
@@ -201,34 +121,26 @@ def convert(
     input_file: Annotated[
         Path,
         typer.Argument(
-            help="Input file to convert (PDF, DOCX, MD, etc.)",
+            help="Input file to convert (PDF, DOCX, MD, TXT, etc.)",
             exists=True,
             dir_okay=False,
             resolve_path=True,
         ),
     ],
+    voice: Annotated[
+        str,
+        typer.Option(
+            "--voice",
+            "-v",
+            help="Voice ID (run 'simple-tts voices' to list)",
+        ),
+    ] = "af_bella",
     output: Annotated[
         Optional[Path],
         typer.Option(
             "--output",
             "-o",
-            help="Output file path. Defaults to input with .m4a extension.",
-        ),
-    ] = None,
-    voice: Annotated[
-        Optional[str],
-        typer.Option(
-            "--voice",
-            "-v",
-            help="Voice to use. Auto-detected from language if not specified.",
-        ),
-    ] = None,
-    lang: Annotated[
-        Optional[str],
-        typer.Option(
-            "--lang",
-            "-l",
-            help="Language code (e.g., 'en', 'fr'). Auto-detected if not specified.",
+            help="Output file path",
         ),
     ] = None,
     speed: Annotated[
@@ -236,7 +148,7 @@ def convert(
         typer.Option(
             "--speed",
             "-s",
-            help="Playback speed multiplier (0.5-2.0).",
+            help="Playback speed (0.5-2.0)",
             min=0.5,
             max=2.0,
         ),
@@ -246,54 +158,47 @@ def convert(
         typer.Option(
             "--format",
             "-f",
-            help="Output format (m4a, mp3, wav, ogg).",
+            help="Output audio format",
         ),
     ] = "m4a",
-    no_checkpoint: Annotated[
+    yes: Annotated[
         bool,
         typer.Option(
-            "--no-checkpoint",
-            help="Skip the checkpoint display before TTS inference.",
+            "--yes",
+            "-y",
+            help="Skip confirmation prompt",
         ),
     ] = False,
 ) -> None:
-    """Convert a document to speech.
+    """Convert a document to speech using Kokoro TTS.
 
-    Takes an input document (PDF, DOCX, MD, etc.) and converts it to
-    an audio file using Kokoro TTS.
+    Example:
+        $ simple-tts convert document.pdf --voice af_bella
+        $ simple-tts convert essay.md -v bf_emma -s 1.2 -o output.mp3
     """
-    total_start_time = time.time()
+    total_start = time.time()
     step_times: dict[str, float] = {}
 
-    # Check system dependencies first
+    # Validate voice
+    if voice not in VOICES:
+        console.print(f"[bold red]Error:[/] Unknown voice '{voice}'")
+        console.print("Run 'simple-tts voices' to see available voices.")
+        raise typer.Exit(1)
+
+    # Check dependencies
     if not check_dependencies(console):
         console.print(
-            "\n[bold yellow]⚠️  Some features may not work without "
-            "all dependencies.[/bold yellow]"
+            "\n[bold yellow]⚠️  Missing dependencies may cause errors.[/bold yellow]\n"
         )
-        console.print()
 
-    # Determine output path
+    # Set output path
     if output is None:
         output = input_file.with_suffix(f".{format_type}")
 
     console.print(f"[bold blue]📄 Input:[/] {input_file}")
     console.print(f"[bold blue]🔊 Output:[/] {output}")
+    console.print(f"[bold blue]🗣️ Voice:[/] {voice}")
 
-    # Handle language selection
-    supported_lang = None
-    if lang:
-        supported_lang = check_language_support(lang)
-        if lang != supported_lang:
-            console.print(
-                f"[bold yellow]⚠️  Language '{lang}' not supported, "
-                f"using '{supported_lang}'[/bold yellow]"
-            )
-        console.print(f"[bold blue]🌍 Language:[/] {supported_lang}")
-    else:
-        console.print("[bold blue]🌍 Language:[/] not specified; will detect from text")
-
-    # Create progress bar with time tracking
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -315,63 +220,32 @@ def convert(
             raise typer.Exit(1) from e
         progress.update(task, completed=100)
         step_times["extract"] = time.time() - step_start
-        console.print(
-            f"[dim]  └─ Extracted {len(text):,} characters "
-            f"in {format_duration(step_times['extract'])}[/dim]"
-        )
+        extract_time = format_duration(step_times["extract"])
+        console.print(f"[dim]  └─ {len(text):,} chars in {extract_time}[/dim]")
 
-        # Detect language if not provided
-        if supported_lang is None:
-            step_start = time.time()
-            task = progress.add_task("Detecting language...", total=100)
-            detected_lang = detect_language(text)
-            supported_lang = check_language_support(detected_lang)
-            if detected_lang != supported_lang:
-                console.print(
-                    f"[bold yellow]⚠️  Language '{detected_lang}' not supported, "
-                    f"using '{supported_lang}'[/bold yellow]"
-                )
-            progress.update(task, completed=100)
-            step_times["detect"] = time.time() - step_start
-            console.print(
-                f"[bold green]🌍 Language:[/] {supported_lang} "
-                f"[dim](detected in {format_duration(step_times['detect'])})[/dim]"
-            )
-
-        # Get voice if not specified
-        if voice is None:
-            voice = get_voice_for_language(supported_lang)
-
-        console.print(f"[bold green]🗣️ Voice:[/] {voice}")
-
-        # Split text into chunks
+        # Split into chunks
         step_start = time.time()
         task = progress.add_task("Preparing text...", total=100)
         chunks = split_into_chunks(text)
         progress.update(task, completed=100)
         step_times["split"] = time.time() - step_start
-        console.print(
-            f"[bold green]📝 Chunks:[/] {len(chunks)} "
-            f"[dim](prepared in {format_duration(step_times['split'])})[/dim]"
-        )
+        split_time = format_duration(step_times["split"])
+        console.print(f"[dim]  └─ {len(chunks)} chunks in {split_time}[/dim]")
 
-    # Display checkpoint if not skipped
-    if not no_checkpoint:
+    # Show checkpoint and ask for confirmation
+    if not yes:
         display_checkpoint(
             input_file=input_file,
             output=output,
             voice=voice,
-            lang=supported_lang,
             speed=speed,
             format_type=format_type,
             chunks=chunks,
             text_length=len(text),
         )
-
-        # Ask for confirmation
         console.print(
             Panel(
-                "[bold]Ready to start TTS inference.[/bold]\n"
+                "[bold]Ready to synthesize.[/bold]\n"
                 "Press [cyan]Enter[/cyan] to continue or [red]Ctrl+C[/red] to cancel.",
                 title="Checkpoint",
                 border_style="blue",
@@ -380,7 +254,7 @@ def convert(
         try:
             input()
         except KeyboardInterrupt:
-            console.print("\n[yellow]Cancelled by user.[/yellow]")
+            console.print("\n[yellow]Cancelled.[/yellow]")
             raise typer.Exit(0) from None
 
     with Progress(
@@ -393,75 +267,76 @@ def convert(
         TimeRemainingColumn(),
         console=console,
     ) as progress:
-        # Initialize TTS engine
+        # Load TTS model
         step_start = time.time()
         task = progress.add_task("Loading TTS model...", total=100)
-        config = TTSConfig(voice=voice, speed=speed)
-        engine = TTSEngine(config)
-        engine.load()
+        pipeline = load_tts(voice)
         progress.update(task, completed=100)
         step_times["load"] = time.time() - step_start
         console.print(
             f"[dim]  └─ Model loaded in {format_duration(step_times['load'])}[/dim]"
         )
 
-        # Synthesize audio with progress tracking
+        # Synthesize chunks
         step_start = time.time()
         task = progress.add_task(
-            f"Synthesizing speech (0/{len(chunks)} chunks)...",
-            total=len(chunks),
+            f"Synthesizing (0/{len(chunks)})...", total=len(chunks)
         )
-        audio_chunks: list[AudioChunk] = []
-
+        audio_chunks = []
         for i, chunk in enumerate(chunks):
-            audio_chunk = engine.synthesize(chunk)
-            audio_chunks.append(audio_chunk)
+            audio = synthesize(pipeline, chunk, voice=voice, speed=speed)
+            audio_chunks.append(audio)
             progress.update(task, advance=1)
-            progress.update(
-                task,
-                description=f"Synthesizing speech ({i + 1}/{len(chunks)} chunks)...",
-            )
+            desc = f"Synthesizing ({i + 1}/{len(chunks)})..."
+            progress.update(task, description=desc)
 
         step_times["synthesize"] = time.time() - step_start
-        console.print(
-            f"[dim]  └─ Synthesized {len(chunks)} chunks "
-            f"in {format_duration(step_times['synthesize'])}[/dim]"
-        )
+        synth_time = format_duration(step_times["synthesize"])
+        console.print(f"[dim]  └─ {len(chunks)} chunks in {synth_time}[/dim]")
 
-        # Concatenate and save
+        # Save audio
         step_start = time.time()
         task = progress.add_task("Saving audio...", total=100)
-        audio_data = concatenate_audio([chunk.data for chunk in audio_chunks])
-        save_audio(audio_data, output, sample_rate=config.sample_rate)
+        audio_data = concatenate_audio(audio_chunks)
+        save_audio(audio_data, output, sample_rate=24000)
         progress.update(task, completed=100)
         step_times["save"] = time.time() - step_start
         console.print(f"[dim]  └─ Saved in {format_duration(step_times['save'])}[/dim]")
 
-    # Final summary
-    total_time = time.time() - total_start_time
-    duration = get_audio_duration(audio_data, config.sample_rate)
+    # Summary
+    total_time = time.time() - total_start
+    duration = get_audio_duration(audio_data, 24000)
 
     console.print()
-    summary_table = Table(title="Summary", show_header=False)
-    summary_table.add_column("Metric", style="cyan")
-    summary_table.add_column("Value", style="green")
-
-    summary_table.add_row("Output File", str(output))
-    summary_table.add_row("Audio Duration", format_duration(duration))
-    summary_table.add_row("Processing Time", format_duration(total_time))
+    summary = Table(title="Summary", show_header=False)
+    summary.add_column("Metric", style="cyan")
+    summary.add_column("Value", style="green")
+    summary.add_row("Output File", str(output))
+    summary.add_row("Audio Duration", format_duration(duration))
+    summary.add_row("Processing Time", format_duration(total_time))
     if total_time > 0:
-        speed_ratio = f"{duration / total_time:.1f}x realtime"
-    else:
-        speed_ratio = "N/A"
-    summary_table.add_row("Speed Ratio", speed_ratio)
+        summary.add_row("Speed Ratio", f"{duration / total_time:.1f}x realtime")
+    console.print(summary)
+    console.print("\n[bold green]✅ Done![/]")
 
-    console.print(summary_table)
-    console.print(f"\n[bold green]✅ Done![/] Duration: {format_duration(duration)}")
+
+@app.command()
+def voices() -> None:
+    """List available voices."""
+    table = Table(title="Available Voices")
+    table.add_column("Voice ID", style="cyan")
+    table.add_column("Language", style="green")
+    table.add_column("Description", style="white")
+
+    for voice_id, info in sorted(VOICES.items()):
+        table.add_row(voice_id, info["language"], info["description"])
+
+    console.print(table)
 
 
 @app.command()
 def version() -> None:
-    """Show the version of simple-tts."""
+    """Show version."""
     from simple_tts import __version__
 
     console.print(f"simple-tts version {__version__}")
@@ -469,7 +344,7 @@ def version() -> None:
 
 @app.command()
 def check_deps() -> None:
-    """Check if all system dependencies are installed."""
+    """Check system dependencies."""
     print_dependency_status(console)
 
 
@@ -477,39 +352,21 @@ def check_deps() -> None:
 def install_deps(
     brew: Annotated[
         bool,
-        typer.Option(
-            "--brew",
-            help="Install dependencies using Homebrew (macOS).",
-        ),
+        typer.Option("--brew", help="Install using Homebrew (macOS)."),
     ] = False,
 ) -> None:
-    """Install missing system dependencies.
-
-    Use --brew to install via Homebrew on macOS.
-    """
+    """Install missing system dependencies."""
     if brew:
-        success = install_dependencies_brew(console)
-        if not success:
+        if not install_dependencies_brew(console):
             raise typer.Exit(1)
     else:
         console.print("[bold]To install dependencies:[/bold]")
         console.print()
-        console.print("[bold]macOS (Homebrew):[/bold]")
-        console.print("  [cyan]simple-tts install-deps --brew[/cyan]")
-        console.print("  or: [cyan]brew install poppler pandoc ffmpeg[/cyan]")
+        console.print("[bold]macOS:[/bold]")
+        console.print("  [cyan]brew install poppler pandoc ffmpeg[/cyan]")
         console.print()
         console.print("[bold]Ubuntu/Debian:[/bold]")
-        console.print("  [cyan]sudo apt-get install poppler-utils pandoc ffmpeg[/cyan]")
-
-
-@app.command()
-def languages() -> None:
-    """List supported languages for TTS."""
-    langs = get_supported_languages()
-    console.print("[bold]Supported languages:[/bold]")
-    console.print()
-    for lang in langs:
-        console.print(f"  • {lang}")
+        console.print("  [cyan]sudo apt install poppler-utils pandoc ffmpeg[/cyan]")
 
 
 if __name__ == "__main__":

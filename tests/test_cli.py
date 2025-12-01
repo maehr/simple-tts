@@ -1,8 +1,10 @@
 """Tests for the CLI module."""
 
+import re
+
 from typer.testing import CliRunner
 
-from simple_tts.cli import app, format_duration, format_eta, validate_speed
+from simple_tts.cli import app, format_duration
 
 runner = CliRunner()
 
@@ -27,40 +29,6 @@ class TestFormatDuration:
         assert format_duration(0) == "0s"
 
 
-class TestFormatEta:
-    """Tests for format_eta function."""
-
-    def test_formats_seconds(self):
-        """Test formatting of ETA in seconds."""
-        assert format_eta(30) == "~30s remaining"
-
-    def test_formats_minutes_and_seconds(self):
-        """Test formatting of ETA with minutes."""
-        assert format_eta(90) == "~1m 30s remaining"
-
-    def test_handles_zero(self):
-        """Test handling of zero ETA."""
-        assert format_eta(0) == "almost done"
-
-    def test_handles_negative(self):
-        """Test handling of negative ETA."""
-        assert format_eta(-10) == "almost done"
-
-
-class TestValidateSpeed:
-    """Tests for validate_speed function."""
-
-    def test_valid_speed(self):
-        """Test that valid speed is returned unchanged."""
-        assert validate_speed(1.0) == 1.0
-        assert validate_speed(1.5) == 1.5
-
-    def test_boundary_values(self):
-        """Test boundary speed values."""
-        assert validate_speed(0.5) == 0.5
-        assert validate_speed(2.0) == 2.0
-
-
 class TestCLIVersion:
     """Tests for the version command."""
 
@@ -70,6 +38,20 @@ class TestCLIVersion:
         assert result.exit_code == 0
         assert "simple-tts" in result.stdout
         assert "0.1.0" in result.stdout
+
+
+class TestCLIVoices:
+    """Tests for the voices command."""
+
+    def test_voices_command(self):
+        """Test that voices command lists available voices."""
+        result = runner.invoke(app, ["voices"])
+        assert result.exit_code == 0
+        # Strip ANSI codes for checking
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+        clean = ansi_escape.sub("", result.stdout)
+        assert "af_bella" in clean
+        assert "English" in clean
 
 
 class TestCLIConvert:
@@ -86,13 +68,33 @@ class TestCLIConvert:
         assert result.exit_code == 0
         assert "Input file" in result.stdout
 
-    def test_convert_has_no_checkpoint_option(self):
-        """Test that convert has --no-checkpoint option."""
-        import re
-
+    def test_convert_has_voice_option(self):
+        """Test that convert has --voice option."""
         result = runner.invoke(app, ["convert", "--help"])
-        assert result.exit_code == 0
-        # Strip ANSI escape codes and check for the option text
         ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        clean_output = ansi_escape.sub("", result.stdout)
-        assert "--no-checkpoint" in clean_output
+        clean = ansi_escape.sub("", result.stdout)
+        assert "--voice" in clean
+
+    def test_convert_has_yes_option(self):
+        """Test that convert has -y/--yes option."""
+        result = runner.invoke(app, ["convert", "--help"])
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+        clean = ansi_escape.sub("", result.stdout)
+        assert "--yes" in clean
+
+    def test_invalid_voice_rejected(self):
+        """Test that invalid voice is rejected."""
+        result = runner.invoke(
+            app, ["convert", "test.txt", "--voice", "invalid_voice"]
+        )
+        assert result.exit_code != 0
+
+
+class TestCLICheckDeps:
+    """Tests for the check-deps command."""
+
+    def test_check_deps_command(self):
+        """Test that check-deps command works."""
+        result = runner.invoke(app, ["check-deps"])
+        assert result.exit_code == 0
+        assert "Dependencies" in result.stdout or "pdftotext" in result.stdout
