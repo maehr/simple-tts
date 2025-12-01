@@ -1,14 +1,19 @@
-import pytest
 import sys
-import numpy as np
 from unittest.mock import MagicMock
+
+import numpy as np
+import pytest
 
 
 class MockKPipeline:
+    """Mock KPipeline to prevent model download during tests."""
+
     def __init__(self, lang_code=None, repo_id=None):
+        """Initialize the mock pipeline."""
         pass
 
     def __call__(self, text, voice=None, speed=1.0):
+        """Synthesize speech (mocked)."""
         # Yield dummy data: (graphemes, phonemes, audio)
         yield ("test", "test", np.zeros(int(24000 * 0.1), dtype=np.float32))
 
@@ -29,8 +34,8 @@ def pytest_configure(config):
 
 @pytest.fixture(autouse=True)
 def mock_kokoro_fixture(monkeypatch):
-    """
-    Fixture to ensure kokoro is mocked for regular tests.
+    """Fixture to ensure kokoro is mocked for regular tests.
+
     This is redundant if pytest_configure works, but good as a backup
     and for proper cleanup in unit tests if we didn't use global patch.
     """
