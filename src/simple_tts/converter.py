@@ -1,7 +1,7 @@
 """Document conversion utilities for extracting text from various formats.
 
-This module provides functions to extract plain text from PDF, DOCX, Markdown,
-and other document formats using system tools (pdftotext, pandoc).
+This module provides functions to extract plain text from PDF, DOCX, EPUB,
+Markdown, and other document formats using system tools (pdftotext, pandoc).
 
 Examples:
     >>> from simple_tts.converter import normalize_text
@@ -55,7 +55,7 @@ def extract_text_from_pdf(file_path: Path) -> str:
 def extract_text_from_document(file_path: Path) -> str:
     """Extract text from a document using pandoc.
 
-    Supports DOCX, MD, QMD, RMD, and other formats that pandoc can handle.
+    Supports DOCX, EPUB, MD, QMD, RMD, and other formats that pandoc can handle.
     Converts the document to plain text.
 
     Args:
@@ -95,7 +95,7 @@ def extract_text(file_path: Path) -> str:
 
     Routes to the appropriate extraction function based on file extension:
     - .pdf: Uses pdftotext
-    - .docx, .md, .qmd, .rmd, .txt: Uses pandoc
+    - .docx, .epub, .md, .qmd, .rmd, .txt, .rst, .html: Uses pandoc
 
     Args:
         file_path: Path to the file to extract text from.
@@ -120,7 +120,16 @@ def extract_text(file_path: Path) -> str:
 
     if extension == ".pdf":
         return extract_text_from_pdf(file_path)
-    elif extension in {".docx", ".md", ".qmd", ".rmd", ".txt", ".rst", ".html"}:
+    elif extension in {
+        ".docx",
+        ".epub",
+        ".md",
+        ".qmd",
+        ".rmd",
+        ".txt",
+        ".rst",
+        ".html",
+    }:
         return extract_text_from_document(file_path)
     else:
         raise ValueError(f"Unsupported file format: {extension}")

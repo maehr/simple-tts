@@ -33,7 +33,7 @@ from simple_tts.dependencies import (
     install_dependencies_brew,
     print_dependency_status,
 )
-from simple_tts.tts import load_tts, synthesize
+from simple_tts.tts import SAMPLE_RATE, load_tts, synthesize
 from simple_tts.voices import VOICES, get_voice_info
 
 app = typer.Typer(
@@ -67,6 +67,38 @@ def format_duration(seconds: float) -> str:
     parts.append(f"{secs}s")
 
     return " ".join(parts)
+
+
+def format_timestamp(seconds: float) -> str:
+    """Format seconds to WebVTT timestamp (hh:mm:ss.mmm)."""
+    ms_total = int(round(seconds * 1000))
+    hours, rem = divmod(ms_total, 3_600_000)
+    minutes, rem = divmod(rem, 60_000)
+    secs, milliseconds = divmod(rem, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{milliseconds:03d}"
+
+
+def build_vtt(chunks: list[str], durations: list[float]) -> str:
+    """Build a WebVTT string from text chunks and durations."""
+    if len(chunks) != len(durations):
+        raise ValueError("Chunks and durations must have the same length.")
+
+    lines = ["WEBVTT", ""]
+    current_time = 0.0
+
+    for i, (chunk, duration) in enumerate(zip(chunks, durations)):
+        start = current_time
+        end = current_time + max(duration, 0.0)
+        text = " ".join(chunk.split()) or "(silence)"
+
+        lines.append(str(i + 1))
+        lines.append(f"{format_timestamp(start)} --> {format_timestamp(end)}")
+        lines.append(text)
+        lines.append("")
+
+        current_time = end
+
+    return "\n".join(lines).strip() + "\n"
 
 
 def display_checkpoint(
@@ -121,7 +153,7 @@ def convert(
     input_file: Annotated[
         Path,
         typer.Argument(
-            help="Input file to convert (PDF, DOCX, MD, TXT, etc.)",
+            help="Input file to convert (PDF, DOCX, EPUB, MD, TXT, etc.)",
             exists=True,
             dir_okay=False,
             resolve_path=True,
@@ -169,6 +201,13 @@ def convert(
             help="Skip confirmation prompt",
         ),
     ] = False,
+    vtt: Annotated[
+        bool,
+        typer.Option(
+            "--vtt/--no-vtt",
+            help="Write WebVTT sidecar captions next to the audio file",
+        ),
+    ] = True,
 ) -> None:
     """Convert a document to speech using Kokoro TTS.
 
@@ -298,14 +337,28 @@ def convert(
         step_start = time.time()
         task = progress.add_task("Saving audio...", total=100)
         audio_data = concatenate_audio(audio_chunks)
-        save_audio(audio_data, output, sample_rate=24000)
+        save_audio(audio_data, output, sample_rate=SAMPLE_RATE)
         progress.update(task, completed=100)
         step_times["save"] = time.time() - step_start
         console.print(f"[dim]  └─ Saved in {format_duration(step_times['save'])}[/dim]")
 
+    vtt_path: Path | None = None
+    if vtt:
+        step_start = time.time()
+        durations = [
+            len(audio) / SAMPLE_RATE if len(audio) else 0.0 for audio in audio_chunks
+        ]
+        vtt_text = build_vtt(chunks, durations)
+        vtt_path = output.with_suffix(".vtt")
+        vtt_path.write_text(vtt_text, encoding="utf-8")
+        console.print(
+            f"[dim]  └─ Captions saved to {vtt_path} "
+            f"({format_duration(time.time() - step_start)})[/dim]"
+        )
+
     # Summary
     total_time = time.time() - total_start
-    duration = get_audio_duration(audio_data, 24000)
+    duration = get_audio_duration(audio_data, SAMPLE_RATE)
 
     console.print()
     summary = Table(title="Summary", show_header=False)
@@ -316,6 +369,8 @@ def convert(
     summary.add_row("Processing Time", format_duration(total_time))
     if total_time > 0:
         summary.add_row("Speed Ratio", f"{duration / total_time:.1f}x realtime")
+    if vtt_path:
+        summary.add_row("Captions", str(vtt_path))
     console.print(summary)
     console.print("\n[bold green]✅ Done![/]")
 
