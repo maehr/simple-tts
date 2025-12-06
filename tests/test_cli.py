@@ -4,7 +4,7 @@ import re
 
 from typer.testing import CliRunner
 
-from simple_tts.cli import app, format_duration
+from simple_tts.cli import app, build_vtt, format_duration, format_timestamp
 
 runner = CliRunner()
 
@@ -27,6 +27,27 @@ class TestFormatDuration:
     def test_handles_zero(self):
         """Test handling of zero duration."""
         assert format_duration(0) == "0s"
+
+
+class TestFormatTimestamp:
+    """Tests for WebVTT timestamp formatting."""
+
+    def test_formats_milliseconds(self):
+        """Test timestamp formatting to hh:mm:ss.mmm."""
+        assert format_timestamp(1.234) == "00:00:01.234"
+        assert format_timestamp(3661.789) == "01:01:01.789"
+
+
+class TestBuildVTT:
+    """Tests for building WebVTT captions."""
+
+    def test_builds_captions(self):
+        """Test WebVTT construction from chunks and durations."""
+        vtt = build_vtt(["Hello world", "Next line"], [1.0, 2.5])
+        assert "WEBVTT" in vtt
+        assert "00:00:00.000 --> 00:00:01.000" in vtt
+        assert "00:00:01.000 --> 00:00:03.500" in vtt
+        assert "Hello world" in vtt and "Next line" in vtt
 
 
 class TestCLIVersion:

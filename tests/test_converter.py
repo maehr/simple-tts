@@ -1,5 +1,6 @@
 """Tests for the converter module."""
 
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -109,3 +110,16 @@ class TestExtractText:
             assert "Paragraph" in text
         finally:
             temp_path.unlink()
+
+    def test_extracts_text_from_epub(self, monkeypatch):
+        """Test extraction from EPUB files via pandoc using bundled sample."""
+        epub_path = Path(__file__).parent / "minimal.epub"
+        assert epub_path.exists()
+
+        def fake_run(cmd, capture_output, text, check):
+            assert cmd == ["pandoc", str(epub_path), "-t", "plain"]
+            return subprocess.CompletedProcess(cmd, 0, stdout="EPUB text", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        text = extract_text(epub_path)
+        assert "EPUB text" in text

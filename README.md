@@ -4,9 +4,10 @@ A simple CLI for converting documents to speech using [Kokoro TTS](https://githu
 
 ## Features
 
-- **Multi-format support**: PDF, DOCX, Markdown, TXT, HTML, and more
+- **Multi-format support**: PDF, DOCX, EPUB, Markdown, TXT, HTML, and more
 - **50+ voices**: American/British English, Spanish, French, Italian, Japanese, Korean, Chinese, Portuguese, Hindi
 - **Multiple output formats**: M4A, MP3, WAV, OGG
+- **Captions by default**: Writes a WebVTT sidecar for easy navigation (use `--no-vtt` to skip)
 - **Adjustable speed**: 0.5x to 2.0x playback speed
 - **Progress tracking**: Real-time progress with time estimates
 
@@ -49,6 +50,12 @@ simple-tts convert document.pdf --voice bf_emma --output audio.mp3
 
 # Faster speed, skip confirmation
 simple-tts convert essay.md -v am_adam -s 1.3 -y
+
+# Convert the bundled EPUB sample
+simple-tts convert tests/minimal.epub -y
+
+# Skip captions if you don't need them
+simple-tts convert document.pdf --no-vtt
 ```
 
 ### Example Output
@@ -122,7 +129,7 @@ Usage: simple-tts convert [OPTIONS] INPUT_FILE
   Convert a document to speech using Kokoro TTS.
 
 Arguments:
-  INPUT_FILE  Input file to convert (PDF, DOCX, MD, TXT, etc.)  [required]
+  INPUT_FILE  Input file to convert (PDF, DOCX, EPUB, MD, TXT, etc.)  [required]
 
 Options:
   -v, --voice TEXT    Voice ID (run 'simple-tts voices' to list)  [default: af_bella]
