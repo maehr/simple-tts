@@ -1,0 +1,8 @@
+contact_links:
+  - name: Are you looking for documentation on simple-tts?
+    url: https://maehr.github.io/simple-tts
+    about: Please see the documentation for simple-tts on its GitHub Pages page.
+  - name: Do want to discuss simple-tts with the community?
+    url: https://github.com/maehr/simple-tts/discussions
+    about: Please see the discussions page for simple-tts.
+blank_issues_enabled: true
