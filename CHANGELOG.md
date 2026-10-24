@@ -40,6 +40,7 @@ Version numbers follow the [versioning policy](README.md#versioning).
 
 ### Fixed
 
+- OGG output uses Vorbis quality 4 to support mono audio at 24,000 Hz.
 - Conflicting format and output suffix options fail before synthesis.
 - Failed GPU chunks contribute no samples before a CPU retry.
 - Missing Kokoro and empty synthesis results produce clear errors.

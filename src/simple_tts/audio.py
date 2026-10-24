@@ -148,6 +148,9 @@ def encode_pcm(
         cmd.extend(["-map", "0:a:0", "-c:a", CODECS[format_type]])
         if format_type == "wav":
             cmd.extend(["-rf64", "auto"])
+        elif format_type == "ogg":
+            # Vorbis rejects 128 kbps for mono audio at 24 kHz.
+            cmd.extend(["-q:a", "4"])
         else:
             cmd.extend(["-b:a", bitrate])
         if format_type in {"m4a", "m4b"}:
@@ -243,7 +246,7 @@ def encode_audio(
         input_path: Path to the input audio file.
         output_path: Path to save the encoded file.
         format_type: Output format ('m4a', 'mp3', 'ogg').
-        bitrate: Audio bitrate.
+        bitrate: Audio bitrate. OGG uses Vorbis quality 4 instead.
 
     Raises:
         RuntimeError: If encoding fails.
@@ -260,10 +263,12 @@ def encode_audio(
         str(input_path),
         "-c:a",
         codec,
-        "-b:a",
-        bitrate,
-        str(output_path),
     ]
+    if format_type == "ogg":
+        cmd.extend(["-q:a", "4"])
+    else:
+        cmd.extend(["-b:a", bitrate])
+    cmd.append(str(output_path))
 
     _run_ffmpeg(cmd)
 

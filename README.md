@@ -41,7 +41,7 @@ pip install -e .
 The project uses Python 3.12 for development.
 The first conversion downloads the Kokoro model and language resources.
 The FFmpeg build must include the encoder for the selected format.
-OGG output uses `libvorbis`.
+OGG output uses `libvorbis` at quality 4.
 
 ## Usage
 
