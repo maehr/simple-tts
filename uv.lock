@@ -1,6 +1,9 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
+
+[manifest]
+build-constraints = [{ name = "cython", specifier = "<3.2" }]
 
 [[package]]
 name = "addict"
@@ -1595,6 +1598,7 @@ dependencies = [
     { name = "numpy" },
     { name = "rich" },
     { name = "soundfile" },
+    { name = "torch" },
     { name = "typer" },
 ]
 
@@ -1616,13 +1620,14 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "kokoro", specifier = ">=0.8.4" },
+    { name = "kokoro", specifier = ">=0.9.4" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "soundfile", specifier = ">=0.12.0" },
+    { name = "torch", specifier = ">=2.2.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a3" },
     { name = "typer", specifier = ">=0.9.0" },
 ]

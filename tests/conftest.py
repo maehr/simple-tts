@@ -1,47 +1,38 @@
 import sys
-from unittest.mock import MagicMock
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 
 class MockKPipeline:
-    """Mock KPipeline to prevent model download during tests."""
+    """Replace the model without importing Kokoro or PyTorch."""
 
-    def __init__(self, lang_code=None, repo_id=None):
-        """Initialize the mock pipeline."""
-        pass
+    def __init__(self, lang_code=None, repo_id=None, device=None):
+        """Record the requested model settings."""
+        self.lang_code = lang_code
+        self.repo_id = repo_id
+        self.device = device
 
     def __call__(self, text, voice=None, speed=1.0):
-        """Synthesize speech (mocked)."""
-        # Yield dummy data: (graphemes, phonemes, audio)
-        yield ("test", "test", np.zeros(int(24000 * 0.1), dtype=np.float32))
+        """Return a short deterministic chunk."""
+        yield (text, text, np.zeros(2400, dtype=np.float32))
 
 
 def pytest_configure(config):
-    """Patch kokoro globally for all tests including doctests."""
-    try:
-        import kokoro
-
-        # Patch KPipeline directly on the module
-        kokoro.KPipeline = MockKPipeline
-    except ImportError:
-        # If kokoro is not installed, mock the module
-        mock_kokoro = MagicMock()
-        mock_kokoro.KPipeline = MockKPipeline
-        sys.modules["kokoro"] = mock_kokoro
+    """Prevent model downloads during tests and doctests."""
+    sys.modules["kokoro"] = SimpleNamespace(KPipeline=MockKPipeline)
 
 
 @pytest.fixture(autouse=True)
-def mock_kokoro_fixture(monkeypatch):
-    """Fixture to ensure kokoro is mocked for regular tests.
-
-    This is redundant if pytest_configure works, but good as a backup
-    and for proper cleanup in unit tests if we didn't use global patch.
-    """
-    try:
-        import kokoro
-
-        monkeypatch.setattr(kokoro, "KPipeline", MockKPipeline)
-    except ImportError:
-        pass
+def mock_models(monkeypatch):
+    """Use CPU-only availability unless a test supplies other devices."""
+    monkeypatch.setitem(sys.modules, "kokoro", SimpleNamespace(KPipeline=MockKPipeline))
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(
+            cuda=SimpleNamespace(is_available=lambda: False),
+            backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False)),
+        ),
+    )

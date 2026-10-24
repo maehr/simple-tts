@@ -9,12 +9,151 @@ Examples:
     'mp3'
 """
 
+import html
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 import numpy as np
 import soundfile as sf
+
+SAMPLE_RATE = 24000
+SUPPORTED_FORMATS = {"m4a", "m4b", "mp3", "wav", "ogg", "opus"}
+CODECS = {
+    "m4a": "aac",
+    "m4b": "aac",
+    "mp3": "libmp3lame",
+    "ogg": "libvorbis",
+    "opus": "libopus",
+    "wav": "pcm_s16le",
+}
+
+
+@dataclass(frozen=True)
+class Chapter:
+    """Chapter bounds in samples at the Kokoro sample rate."""
+
+    title: str
+    start_sample: int
+    end_sample: int
+
+
+class PCMWriter:
+    """Write completed chunks as mono float32 PCM with bounded memory."""
+
+    def __init__(self, stream: BinaryIO) -> None:
+        """Use an open binary stream and count the written samples."""
+        self.stream = stream
+        self.samples = 0
+
+    def write(self, audio: np.ndarray) -> None:
+        """Write one completed chunk in little-endian sample order."""
+        chunk = np.asarray(audio, dtype="<f4")
+        if chunk.ndim != 1:
+            raise ValueError("Audio must contain mono samples.")
+        chunk.tofile(self.stream)
+        self.samples += chunk.size
+
+
+def escape_ffmetadata(title: str) -> str:
+    """Escape FFmetadata separators and line breaks."""
+    title = title.replace("\r\n", "\n").replace("\r", "\n")
+    return "".join("\\" + c if c in "\\=;#\n" else c for c in title)
+
+
+def write_ffmetadata(chapters: list[Chapter], path: Path) -> None:
+    """Write chapter times in the original sample time base."""
+    lines = [";FFMETADATA1\n"]
+    for chapter in chapters:
+        lines.append(
+            f"[CHAPTER]\nTIMEBASE=1/{SAMPLE_RATE}\n"
+            f"START={chapter.start_sample}\nEND={chapter.end_sample}\n"
+            f"title={escape_ffmetadata(chapter.title)}\n"
+        )
+    path.write_text("".join(lines), encoding="utf-8")
+
+
+def vtt_timestamp(samples: int) -> str:
+    """Convert samples to milliseconds without a 24-hour wrap."""
+    milliseconds = samples * 1000 // SAMPLE_RATE
+    hours, remainder = divmod(milliseconds, 3600000)
+    minutes, remainder = divmod(remainder, 60000)
+    seconds, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02}:{minutes:02}:{seconds:02}.{milliseconds:03}"
+
+
+def write_vtt(chapters: list[Chapter], path: Path) -> None:
+    """Write chapter navigation with escaped WebVTT cue text."""
+    cues = ["WEBVTT\n\n"]
+    for chapter in chapters:
+        title = html.escape(" ".join(chapter.title.split()), quote=False)
+        cues.append(
+            f"{vtt_timestamp(chapter.start_sample)} --> "
+            f"{vtt_timestamp(chapter.end_sample)}\n{title}\n\n"
+        )
+    path.write_text("".join(cues), encoding="utf-8")
+
+
+def _run_ffmpeg(cmd: list[str]) -> None:
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to encode audio: {e.stderr}") from e
+    except FileNotFoundError as e:
+        raise RuntimeError("ffmpeg not found. Install ffmpeg.") from e
+
+
+def encode_pcm(
+    input_path: Path,
+    output_path: Path,
+    format_type: str = "m4a",
+    chapters: list[Chapter] | None = None,
+    bitrate: str = "128k",
+) -> None:
+    """Encode raw mono float32 PCM once, with optional M4B chapters."""
+    if format_type not in SUPPORTED_FORMATS:
+        raise ValueError(f"Unsupported audio format: {format_type}")
+    if input_path.stat().st_size == 0:
+        raise ValueError("Synthesis produced no audio.")
+    with tempfile.TemporaryDirectory(prefix="simple-tts-metadata-") as directory:
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "f32le",
+            "-ar",
+            str(SAMPLE_RATE),
+            "-ac",
+            "1",
+            "-i",
+            str(input_path),
+        ]
+        if format_type == "m4b" and chapters:
+            metadata = Path(directory) / "chapters.ffmeta"
+            write_ffmetadata(chapters, metadata)
+            cmd.extend(
+                [
+                    "-f",
+                    "ffmetadata",
+                    "-i",
+                    str(metadata),
+                    "-map_metadata",
+                    "1",
+                    "-map_chapters",
+                    "1",
+                ]
+            )
+        cmd.extend(["-map", "0:a:0", "-c:a", CODECS[format_type]])
+        if format_type == "wav":
+            cmd.extend(["-rf64", "auto"])
+        else:
+            cmd.extend(["-b:a", bitrate])
+        if format_type in {"m4a", "m4b"}:
+            cmd.extend(["-f", "mp4"])
+        cmd.append(str(output_path))
+        _run_ffmpeg(cmd)
 
 
 def concatenate_audio(chunks: list[np.ndarray]) -> np.ndarray:
@@ -112,14 +251,7 @@ def encode_audio(
     Examples:
         >>> # encode_audio(Path("input.wav"), Path("output.m4a"))
     """
-    codec_map = {
-        "m4a": "aac",
-        "mp3": "libmp3lame",
-        "ogg": "libvorbis",
-        "opus": "libopus",
-    }
-
-    codec = codec_map.get(format_type, "aac")
+    codec = CODECS.get(format_type, "aac")
 
     cmd = [
         "ffmpeg",
@@ -133,12 +265,7 @@ def encode_audio(
         str(output_path),
     ]
 
-    try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Failed to encode audio: {e.stderr}") from e
-    except FileNotFoundError as e:
-        raise RuntimeError("ffmpeg not found. Please install ffmpeg.") from e
+    _run_ffmpeg(cmd)
 
 
 def save_audio(

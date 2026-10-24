@@ -123,3 +123,157 @@ class TestExtractText:
         monkeypatch.setattr(subprocess, "run", fake_run)
         text = extract_text(epub_path)
         assert "EPUB text" in text
+
+
+@pytest.mark.parametrize("level", range(1, 7))
+def test_exact_chapter_level(tmp_path, level):
+    """Only the chosen level starts chapters; all headings remain spoken."""
+    from simple_tts.converter import extract_sections
+
+    source = tmp_path / "book.md"
+    lines = ["Preamble."]
+    for heading_level in range(1, 7):
+        lines.extend(["#" * heading_level + f" Heading{heading_level}", "Body."])
+    source.write_text("\n\n".join(lines))
+    result = extract_sections(source, level)
+    assert result.matched_headings == 1
+    assert [section.title for section in result.sections] == [
+        "Introduction",
+        f"Heading{level}",
+    ]
+    narration = " ".join(section.text for section in result.sections)
+    for heading_level in range(1, 7):
+        assert narration.count(f"Heading{heading_level}") == 1
+    assert result.sections[1].text.startswith(f"Heading{level}")
+
+
+@pytest.mark.parametrize("suffix", ["md", "qmd", "rmd"])
+def test_setext_and_formatted_titles(tmp_path, suffix):
+    """Pandoc retains Setext headings and removes title formatting."""
+    from simple_tts.converter import extract_sections
+
+    source = tmp_path / f"book.{suffix}"
+    source.write_text(
+        "Preface\n=======\n\nIntro.\n\n"
+        "A *formatted* [title](https://example.com) `code`\n"
+        "------------------------------------------------------\n\nBody.\n\n"
+        "## Last **chapter**\n\nEnd.\n"
+    )
+    result = extract_sections(source, 2)
+    assert [section.title for section in result.sections] == [
+        "Introduction",
+        "A formatted title code",
+        "Last chapter",
+    ]
+    assert result.sections[0].text == "Preface\n\nIntro."
+    assert result.sections[1].text.count("A formatted title code") == 1
+
+
+def test_code_does_not_start_chapters(tmp_path):
+    """Heading-like code has no Header nodes."""
+    from simple_tts.converter import extract_sections
+
+    source = tmp_path / "no-headings.md"
+    source.write_text("Text.\n\n```markdown\n# False title\n```\n\n    ## Also code\n")
+    result = extract_sections(source)
+    assert result.matched_headings == 0
+    assert len(result.sections) == 1
+    assert result.sections[0].title == "no-headings"
+    assert "False title" in result.sections[0].text
+
+
+def test_absent_selected_level(tmp_path):
+    """Other heading levels do not create an introduction chapter."""
+    from simple_tts.converter import extract_sections
+
+    source = tmp_path / "book.md"
+    source.write_text("# Title\n\n### Details\n\nBody.")
+    result = extract_sections(source, 2)
+    assert result.matched_headings == 0
+    assert [section.title for section in result.sections] == ["book"]
+    assert "Title" in result.sections[0].text
+    assert "Details" in result.sections[0].text
+
+
+def test_nested_html_headings(tmp_path):
+    """Headings inside HTML divisions retain their level."""
+    from simple_tts.converter import extract_sections
+
+    source = tmp_path / "book.html"
+    source.write_text("<div><h1>Title</h1><h2>First</h2><p>Body</p></div>")
+    result = extract_sections(source, 2)
+    assert [section.title for section in result.sections] == ["Introduction", "First"]
+
+
+def test_docx_headings(tmp_path):
+    """DOCX styles retain the same chapter boundaries as Markdown."""
+    import subprocess
+
+    from simple_tts.converter import extract_sections
+
+    source = tmp_path / "book.docx"
+    subprocess.run(
+        ["pandoc", "-f", "markdown", "-o", str(source)],
+        input="# Book\n\n## First\n\nBody.\n\n## Last\n\nEnd.",
+        text=True,
+        check=True,
+    )
+    result = extract_sections(source, 2)
+    assert [section.title for section in result.sections] == [
+        "Introduction",
+        "First",
+        "Last",
+    ]
+
+
+def test_pdf_is_one_section(tmp_path, monkeypatch):
+    """PDF extraction keeps the existing text extraction helper."""
+    from simple_tts import converter
+
+    source = tmp_path / "book.pdf"
+    source.touch()
+    monkeypatch.setattr(converter, "extract_text_from_pdf", lambda path: "PDF text")
+    result = converter.extract_sections(source, 2)
+    assert result.sections == [converter.Section("book", "PDF text")]
+    assert result.matched_headings == 0
+
+
+def test_rst_headings(tmp_path):
+    """RST heading levels pass through the Pandoc structure."""
+    from simple_tts.converter import extract_sections
+
+    source = tmp_path / "book.rst"
+    source.write_text("Book\n====\n\nFirst\n-----\n\nBody.\n\nLast\n----\n\nEnd.\n")
+    result = extract_sections(source, 2)
+    assert [section.title for section in result.sections] == [
+        "Introduction",
+        "First",
+        "Last",
+    ]
+
+
+def test_no_preamble_does_not_add_introduction(tmp_path):
+    """A document that starts with a selected heading has no preamble chapter."""
+    from simple_tts.converter import extract_sections
+
+    source = tmp_path / "book.md"
+    source.write_text("## First\n\n## Last\n")
+    result = extract_sections(source, 2)
+    assert [section.title for section in result.sections] == ["First", "Last"]
+    assert [section.text for section in result.sections] == ["First", "Last"]
+
+
+def test_epub_chapter_extraction():
+    """The bundled EPUB keeps its headings in structured extraction."""
+    from simple_tts.converter import extract_sections
+
+    result = extract_sections(Path(__file__).parent / "minimal.epub")
+    assert result.matched_headings == 3
+    assert [section.title for section in result.sections] == [
+        "Chapter 1",
+        "Chapter 2",
+        "Copyright",
+    ]
+    for section in result.sections:
+        assert section.text.startswith(section.title)
+        assert section.text.count(section.title) == 1
