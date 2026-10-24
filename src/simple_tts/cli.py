@@ -3,7 +3,7 @@
 A simple CLI for converting documents to speech using Kokoro TTS.
 
 Example:
-    $ simple-tts convert document.pdf --voice af_bella
+    $ simple-tts convert document.md --voice af_bella
     $ simple-tts voices
     $ simple-tts check-deps
 """
@@ -44,7 +44,7 @@ from simple_tts.voices import VOICES, get_voice_info
 
 app = typer.Typer(
     name="simple-tts",
-    help="Convert documents to speech using Kokoro TTS.",
+    help="Convert prepared text and structured documents to speech using Kokoro TTS.",
     add_completion=False,
 )
 console = Console()
@@ -160,7 +160,7 @@ def convert(
     input_file: Annotated[
         Path,
         typer.Argument(
-            help="Input file: PDF, DOCX, EPUB, MD, QMD, RMD, TXT, RST, or HTML.",
+            help="Prepared input: MD, QMD, RMD, TXT, DOCX, EPUB, RST, or HTML.",
             exists=True,
             dir_okay=False,
             resolve_path=True,
@@ -229,7 +229,6 @@ def convert(
         console.print(f"[bold red]Error:[/] {e}")
         raise typer.Exit(1) from e
 
-    check_dependencies(console)
     console.print(f"[bold blue]Input:[/] {input_file}")
     console.print(f"[bold blue]Output:[/] {output}")
     console.print(f"[bold blue]Voice:[/] {voice}")
@@ -249,6 +248,7 @@ def convert(
         chunks = [chunk for _, section_chunks in sections for chunk in section_chunks]
         if not chunks:
             raise ValueError("The document contains no narration text.")
+        check_dependencies(console)
         if not yes:
             display_checkpoint(
                 input_file,
@@ -383,10 +383,10 @@ def install_deps(
         console.print("[bold]To install dependencies:[/bold]")
         console.print()
         console.print("[bold]macOS:[/bold]")
-        console.print("  [cyan]brew install poppler pandoc ffmpeg[/cyan]")
+        console.print("  [cyan]brew install pandoc ffmpeg[/cyan]")
         console.print()
         console.print("[bold]Ubuntu/Debian:[/bold]")
-        console.print("  [cyan]sudo apt install poppler-utils pandoc ffmpeg[/cyan]")
+        console.print("  [cyan]sudo apt install pandoc ffmpeg[/cyan]")
 
 
 if __name__ == "__main__":

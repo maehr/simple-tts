@@ -61,33 +61,19 @@ class TestCLIConvert:
 
     def test_convert_missing_file(self):
         """Test convert with non-existent file."""
-        result = runner.invoke(app, ["convert", "/nonexistent/file.pdf"])
+        result = runner.invoke(app, ["convert", "/nonexistent/file.md"])
         assert result.exit_code != 0
 
     def test_convert_shows_help(self):
         """Test that convert shows help."""
         result = runner.invoke(app, ["convert", "--help"])
         assert result.exit_code == 0
-        assert "Input file" in result.stdout
-
-    def test_convert_has_voice_option(self):
-        """Test that convert has --voice option."""
-        result = runner.invoke(app, ["convert", "--help"])
+        assert "Prepared input" in result.stdout
+        assert "PDF" not in result.stdout
         ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
         clean = ansi_escape.sub("", result.stdout)
         assert "--voice" in clean
-
-    def test_convert_has_yes_option(self):
-        """Test that convert has -y/--yes option."""
-        result = runner.invoke(app, ["convert", "--help"])
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        clean = ansi_escape.sub("", result.stdout)
         assert "--yes" in clean
-
-    def test_invalid_voice_rejected(self):
-        """Test that invalid voice is rejected."""
-        result = runner.invoke(app, ["convert", "test.txt", "--voice", "invalid_voice"])
-        assert result.exit_code != 0
 
 
 class TestCLICheckDeps:
@@ -97,7 +83,8 @@ class TestCLICheckDeps:
         """Test that check-deps command works."""
         result = runner.invoke(app, ["check-deps"])
         assert result.exit_code == 0
-        assert "Dependencies" in result.stdout or "pdftotext" in result.stdout
+        assert "pandoc" in result.stdout
+        assert "ffmpeg" in result.stdout
 
 
 @pytest.fixture
@@ -110,6 +97,33 @@ def conversion(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "check_dependencies", lambda *args: True)
     monkeypatch.setattr(cli, "load_tts", lambda *args, **kwargs: object())
     return cli, source
+
+
+@pytest.mark.parametrize("suffix", [".pdf", ".PDF"])
+def test_pdf_rejected_before_external_tools_or_synthesis(tmp_path, monkeypatch, suffix):
+    """PDF input points to preparation guidance without loading tools or models."""
+    from unittest.mock import Mock
+
+    from simple_tts import cli, converter
+
+    source = tmp_path / f"paper{suffix}"
+    source.write_bytes(b"%PDF-1.7")
+    run = Mock()
+    check = Mock()
+    load = Mock()
+    monkeypatch.setattr(converter.subprocess, "run", run)
+    monkeypatch.setattr(cli, "check_dependencies", check)
+    monkeypatch.setattr(cli, "load_tts", load)
+    result = runner.invoke(app, ["convert", str(source), "-y"])
+    assert result.exit_code == 1
+    assert "PDF input is not supported" in result.output
+    assert "Markdown or plain text" in result.output
+    assert "Check reading order and remove unwanted text" in result.output
+    assert "https://github.com/maehr/simple-tts#prepare-input" in result.output
+    run.assert_not_called()
+    check.assert_not_called()
+    load.assert_not_called()
+    assert list(tmp_path.iterdir()) == [source]
 
 
 @pytest.mark.parametrize(
@@ -499,8 +513,8 @@ def test_install_deps_shows_manual_commands():
     """The installer provides commands when no installer option is selected."""
     result = runner.invoke(app, ["install-deps"])
     assert result.exit_code == 0
-    assert "brew install poppler pandoc ffmpeg" in result.output
-    assert "sudo apt install poppler-utils pandoc ffmpeg" in result.output
+    assert "brew install pandoc ffmpeg" in result.output
+    assert "sudo apt install pandoc ffmpeg" in result.output
 
 
 def test_empty_input_stops_before_model_loading(conversion, monkeypatch):

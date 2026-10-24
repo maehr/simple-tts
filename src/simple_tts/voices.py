@@ -83,17 +83,3 @@ def get_voice_info(voice_id: str) -> dict[str, str]:
         {'language': 'Unknown', 'description': 'Unknown voice'}
     """
     return VOICES.get(voice_id, {"language": "Unknown", "description": "Unknown voice"})
-
-
-def list_voices() -> list[str]:
-    """Get list of available voice IDs.
-
-    Returns:
-        Sorted list of voice IDs.
-
-    Example:
-        >>> voices = list_voices()
-        >>> "af_bella" in voices
-        True
-    """
-    return sorted(VOICES.keys())

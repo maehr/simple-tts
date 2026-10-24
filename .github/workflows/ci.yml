@@ -60,12 +60,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y poppler-utils pandoc ffmpeg
+          sudo apt-get install -y pandoc ffmpeg
 
       - name: Install system dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install poppler pandoc ffmpeg
+          brew install pandoc ffmpeg
 
       - name: Install Python dependencies
         run: uv sync --dev

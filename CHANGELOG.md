@@ -2,6 +2,25 @@
 
 Version numbers follow the [versioning policy](README.md#versioning).
 
+## Unreleased
+
+Issue: [#7](https://github.com/maehr/simple-tts/issues/7).
+
+### Breaking changes
+
+- BREAKING CHANGE: PDF input is no longer supported. See the [input guide](README.md#prepare-input) for preparation steps.
+- BREAKING CHANGE: Remove `extract_text_from_pdf()`, `extract_text_from_document()`, and `extract_text()`. Use `extract_sections()` for prepared documents.
+- BREAKING CHANGE: Remove unused `list_voices()` and `get_dependency_status()` helpers.
+- BREAKING CHANGE: `Dependency` removes `package`, `brew_package`, and `apt_package`. Use `name` for command and package names.
+
+### Changed
+
+- Pandoc and FFmpeg are the only required system tools. Dependency checks, installers, and CI no longer require Poppler.
+- CLI help and examples focus on prepared text and structured Markdown.
+- The input guide includes a `paper.md` example and links to external PDF tools.
+- Remove tests for obsolete helpers and redundant checks of return types.
+- Keep the Ruff configuration in `pyproject.toml` only.
+
 ## 0.2.0 - 2026-10-24
 
 ### Breaking changes
