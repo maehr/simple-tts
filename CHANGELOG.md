@@ -2,13 +2,12 @@
 
 Version numbers follow the [versioning policy](README.md#versioning).
 
-## 0.2.0 (unreleased)
+## 0.2.0 - 2026-10-24
 
 ### Breaking changes
 
 - BREAKING CHANGE: `load_tts()` returns a pipeline wrapper with device state.
 - BREAKING CHANGE: Missing Kokoro raises an error. Passing `None` to `synthesize()` also raises an error.
-
 - BREAKING CHANGE: VTT output defaults to off and contains chapter titles instead of narration captions.
 
 ### Added

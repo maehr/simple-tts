@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "simple-tts"
-version = "0.1.0"
+version = "0.2.0"
 description = "A simple text-to-speech CLI using Kokoro TTS"
 readme = "README.md"
 license = { file = "LICENSE" }
