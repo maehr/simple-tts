@@ -173,7 +173,8 @@ def test_ffmetadata_escaping(tmp_path):
     )
 
 
-def test_real_m4b_aac_chapters(tmp_path):
+@pytest.mark.parametrize("format_type", ["m4b", "mp4"])
+def test_real_m4b_aac_chapters(tmp_path, format_type):
     """Real FFmpeg embeds AAC chapters with sample-derived times and titles."""
     import json
     import subprocess
@@ -186,8 +187,8 @@ def test_real_m4b_aac_chapters(tmp_path):
         Chapter("Über = ; # \\ & <雪>", 0, 24000),
         Chapter("Last chapter", 24000, 60000),
     ]
-    output = tmp_path / "book.m4b"
-    encode_pcm(pcm, output, "m4b", chapters)
+    output = tmp_path / f"book.{format_type}"
+    encode_pcm(pcm, output, format_type, chapters)
     result = subprocess.run(
         [
             "ffprobe",
@@ -276,3 +277,82 @@ def test_metadata_cleanup_on_encoding_error(tmp_path, monkeypatch):
             pcm, tmp_path / "book.m4b", "m4b", [audio.Chapter("Title", 0, 240)]
         )
     assert not metadata[0].parent.exists()
+
+
+def test_chapter_export_exact_ranges_and_names(tmp_path, monkeypatch):
+    """Chapter exports copy exact samples and use safe, unique Unicode names."""
+    from simple_tts import audio
+
+    pcm = tmp_path / "audio.f32le"
+    samples = np.arange(600013, dtype="<f4")
+    samples.tofile(pcm)
+    chapters = [
+        audio.Chapter("../Same / title", 0, 300007),
+        audio.Chapter("../Same / title", 300007, 600011),
+        audio.Chapter("雪" * 100, 600011, 600012),
+        audio.Chapter("???", 600012, 600013),
+    ]
+    seen = []
+
+    def encode(source, output, format_type, local):
+        expected = chapters[len(seen)]
+        np.testing.assert_array_equal(
+            np.fromfile(source, dtype="<f4"),
+            samples[expected.start_sample : expected.end_sample],
+        )
+        assert local == [
+            audio.Chapter(
+                expected.title, 0, expected.end_sample - expected.start_sample
+            )
+        ]
+        assert format_type == "mp4"
+        seen.append(source)
+        output.write_bytes(b"encoded")
+
+    monkeypatch.setattr(audio, "encode_pcm", encode)
+    directory = tmp_path / "chapters"
+    audio.export_chapters(pcm, directory, "mp4", chapters)
+    assert sorted(path.name for path in directory.glob("*.mp4")) == [
+        "01_same-title.mp4",
+        "02_same-title.mp4",
+        f"03_{'雪' * 60}.mp4",
+        "04_chapter.mp4",
+    ]
+    assert (
+        "00:00:00.000 --> 00:00:12.500" in (directory / "02_same-title.vtt").read_text()
+    )
+    assert all(not path.parent.exists() for path in seen)
+
+
+@pytest.mark.parametrize("bounds", [(-1, 1), (0, 0), (0, 3)])
+def test_chapter_export_rejects_invalid_ranges(tmp_path, bounds):
+    """Invalid sample bounds cannot silently produce truncated chapters."""
+    from simple_tts.audio import Chapter, export_chapters
+
+    pcm = tmp_path / "audio.f32le"
+    np.zeros(2, dtype="<f4").tofile(pcm)
+    with pytest.raises(ValueError, match="Chapter bounds"):
+        export_chapters(pcm, tmp_path / "chapters", "wav", [Chapter("A", *bounds)])
+
+
+def test_real_chapter_wav_samples(tmp_path):
+    """Real chapter WAVs preserve every sample across a non-round boundary."""
+    import soundfile as sf
+
+    from simple_tts.audio import Chapter, export_chapters
+
+    pcm = tmp_path / "audio.f32le"
+    samples = np.tile(np.array([0.25, -0.5], dtype="<f4"), 24001)
+    samples.tofile(pcm)
+    directory = tmp_path / "chapters"
+    export_chapters(
+        pcm,
+        directory,
+        "wav",
+        [Chapter("First", 0, 24001), Chapter("Last", 24001, len(samples))],
+    )
+    first, sample_rate = sf.read(directory / "01_first.wav")
+    last, _ = sf.read(directory / "02_last.wav")
+    assert sample_rate == 24000
+    assert len(first) == len(last) == 24001
+    np.testing.assert_array_equal(np.concatenate([first, last]), samples)

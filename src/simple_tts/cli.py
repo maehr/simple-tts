@@ -8,6 +8,7 @@ Example:
     $ simple-tts check-deps
 """
 
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -32,6 +33,7 @@ from simple_tts.audio import (
     Chapter,
     PCMWriter,
     encode_pcm,
+    export_chapters,
     write_vtt,
 )
 from simple_tts.converter import extract_sections, split_into_chunks
@@ -118,15 +120,15 @@ def display_checkpoint(
     text_length: int,
 ) -> None:
     """Display checkpoint before TTS inference."""
-    voice_info = get_voice_info(voice)
-
     config_table = Table(title="TTS Configuration", show_header=False)
     config_table.add_column("Parameter", style="cyan")
     config_table.add_column("Value", style="green")
 
     config_table.add_row("Input File", str(input_file))
     config_table.add_row("Output File", str(output))
-    config_table.add_row("Voice", f"{voice} ({voice_info['description']})")
+    for voice_id in voice.split(","):
+        description = get_voice_info(voice_id)["description"]
+        config_table.add_row("Voice", f"{voice_id} ({description})")
     config_table.add_row("Speed", f"{speed}x")
     config_table.add_row("Format", format_type)
     config_table.add_row("Text Length", f"{text_length:,} characters")
@@ -177,6 +179,48 @@ def resolve_output(
     return output, selected
 
 
+def parse_voices(value: str) -> list[str]:
+    """Validate a rotation that shares one Kokoro language code."""
+    voices = [voice.strip() for voice in value.split(",")]
+    for voice in voices:
+        if voice not in VOICES:
+            raise ValueError(f"Unknown voice '{voice}'. Run 'simple-tts voices'.")
+    if len({voice[0] for voice in voices}) != 1:
+        raise ValueError("All voices must share one Kokoro language code.")
+    return voices
+
+
+def publish_outputs(outputs: list[tuple[Path, Path]]) -> None:
+    """Publish staged outputs and restore previous outputs after a failure."""
+    backup_directory = Path(
+        tempfile.mkdtemp(prefix=".simple-tts-backup-", dir=outputs[0][1].parent)
+    )
+    backups = []
+    published = []
+    try:
+        for index, (source, destination) in enumerate(outputs):
+            if destination.exists() or destination.is_symlink():
+                backup = backup_directory / str(index)
+                destination.replace(backup)
+                backups.append((backup, destination))
+            source.replace(destination)
+            published.append((source, destination))
+    except BaseException:
+        try:
+            for source, destination in reversed(published):
+                destination.replace(source)
+            for backup, destination in reversed(backups):
+                backup.replace(destination)
+        except BaseException as error:
+            raise RuntimeError(
+                f"Could not restore outputs. Recover previous files from "
+                f"{backup_directory}."
+            ) from error
+        shutil.rmtree(backup_directory)
+        raise
+    shutil.rmtree(backup_directory)
+
+
 @app.command()
 def convert(
     input_file: Annotated[
@@ -191,7 +235,9 @@ def convert(
     voice: Annotated[
         str,
         typer.Option(
-            "--voice", "-v", help="Voice ID. Run 'simple-tts voices' for the list."
+            "--voice",
+            "-v",
+            help="Voice IDs separated by commas. Rotate once per chapter.",
         ),
     ] = "af_bella",
     output: Annotated[
@@ -209,7 +255,7 @@ def convert(
         typer.Option(
             "--format",
             "-f",
-            help="Audio format: m4a, m4b, mp3, wav, ogg, or opus. Default: m4a.",
+            help="Audio format: m4a, m4b, mp4, mp3, wav, ogg, or opus. Default: m4a.",
             show_default=False,
         ),
     ] = None,
@@ -222,10 +268,6 @@ def convert(
             max=6,
         ),
     ] = 1,
-    vtt: Annotated[
-        bool,
-        typer.Option("--vtt/--no-vtt", help="Write chapter navigation to a .vtt file."),
-    ] = False,
     device: Annotated[
         str,
         typer.Option("--device", help="Device: auto, cuda, mps, or cpu."),
@@ -235,18 +277,29 @@ def convert(
         typer.Option("--yes", "-y", help="Skip the confirmation prompt."),
     ] = False,
 ) -> None:
-    """Convert a document to speech with optional chapter navigation."""
+    """Write master audio, chapter audio, and VTT navigation files."""
     total_start = time.time()
     try:
         output, format_type = resolve_output(input_file, output, format_type)
         if device not in DEVICES:
             raise ValueError("Device must be auto, cuda, mps, or cpu.")
-        if voice not in VOICES:
-            raise ValueError(f"Unknown voice '{voice}'. Run 'simple-tts voices'.")
+        selected_voices = parse_voices(voice)
+        voice = ",".join(selected_voices)
         if not output.parent.is_dir():
             raise ValueError(f"Output directory does not exist: {output.parent}")
-        if output.resolve() == input_file.resolve():
-            raise ValueError("The output path must differ from the input path.")
+        chapter_directory = output.with_name(f"{output.stem}_chapters")
+        if input_file.resolve() in {
+            output.resolve(),
+            output.with_suffix(".vtt").resolve(),
+        }:
+            raise ValueError("The output paths must differ from the input path.")
+        if input_file.resolve().is_relative_to(chapter_directory.resolve()):
+            raise ValueError("The input must be outside the generated chapter folder.")
+        for path in (output, output.with_suffix(".vtt")):
+            if path.is_dir():
+                raise ValueError(f"An output file path is a directory: {path}")
+        if chapter_directory.exists() and not chapter_directory.is_dir():
+            raise ValueError(f"The chapter folder path is a file: {chapter_directory}")
     except ValueError as e:
         console.print(f"[bold red]Error:[/] {e}")
         raise typer.Exit(1) from e
@@ -258,7 +311,7 @@ def convert(
 
     try:
         document = extract_sections(input_file, chapter_level)
-        if (format_type == "m4b" or vtt) and not document.matched_headings:
+        if not document.matched_headings:
             console.print(
                 f"[yellow]Warning: No headings match level {chapter_level}. "
                 f"Use one chapter named '{input_file.stem}'.[/yellow]"
@@ -308,7 +361,7 @@ def convert(
         ):
             task = progress.add_task("Load the TTS model...", total=None)
             pipeline = load_tts(
-                voice,
+                selected_voices[0],
                 device=device,
                 report=lambda message: console.print(message, markup=False),
             )
@@ -318,10 +371,13 @@ def convert(
             chapters = []
             with pcm_path.open("wb") as stream:
                 writer = PCMWriter(stream)
-                for title, section_chunks in sections:
+                for index, (title, section_chunks) in enumerate(sections):
+                    section_voice = selected_voices[index % len(selected_voices)]
                     start_sample = writer.samples
                     for chunk in section_chunks:
-                        audio = synthesize(pipeline, chunk, voice=voice, speed=speed)
+                        audio = synthesize(
+                            pipeline, chunk, voice=section_voice, speed=speed
+                        )
                         writer.write(audio)
                         del audio
                         progress.update(task, advance=1)
@@ -335,12 +391,17 @@ def convert(
             staged_audio = Path(staging) / output.name
             encode_pcm(pcm_path, staged_audio, format_type, chapters)
             staged_vtt = Path(staging) / "chapters.vtt"
-            if vtt:
-                write_vtt(chapters, staged_vtt)
+            write_vtt(chapters, staged_vtt)
+            staged_chapters = Path(staging) / "tracks"
+            export_chapters(pcm_path, staged_chapters, format_type, chapters)
             progress.update(task, completed=1, total=1)
-            staged_audio.replace(output)
-            if vtt:
-                staged_vtt.replace(output.with_suffix(".vtt"))
+            publish_outputs(
+                [
+                    (staged_audio, output),
+                    (staged_vtt, output.with_suffix(".vtt")),
+                    (staged_chapters, chapter_directory),
+                ]
+            )
     except KeyboardInterrupt:
         console.print("[yellow]Cancelled.[/yellow]")
         raise typer.Exit(130) from None
@@ -354,8 +415,8 @@ def convert(
     summary.add_column("Metric", style="cyan")
     summary.add_column("Value", style="green")
     summary.add_row("Output File", str(output))
-    if vtt:
-        summary.add_row("Chapter VTT", str(output.with_suffix(".vtt")))
+    summary.add_row("Chapter VTT", str(output.with_suffix(".vtt")))
+    summary.add_row("Chapter Folder", str(chapter_directory))
     summary.add_row("Chapters", str(len(chapters)))
     summary.add_row("Audio Duration", format_duration(duration))
     summary.add_row("Processing Time", format_duration(total_time))

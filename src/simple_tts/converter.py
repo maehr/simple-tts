@@ -10,7 +10,9 @@ Examples:
 """
 
 import json
+import shutil
 import subprocess
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -53,7 +55,7 @@ def extract_sections(file_path: Path, chapter_level: int = 1) -> ExtractedDocume
     """Extract chapters at exactly the selected Pandoc heading level.
 
     Render each section after reading the Header nodes. Keep other headings in
-    the narration. Treat a PDF as one section because it has no Pandoc headings.
+    the narration. Prefer optional pdf2md headings for PDF input.
     """
     if not 1 <= chapter_level <= 6:
         raise ValueError("Chapter level must be from 1 through 6.")
@@ -61,15 +63,18 @@ def extract_sections(file_path: Path, chapter_level: int = 1) -> ExtractedDocume
         raise FileNotFoundError(f"File not found: {file_path}")
     extension = file_path.suffix.lower()
     if extension == ".pdf":
-        text = normalize_text(extract_text_from_pdf(file_path))
-        return ExtractedDocument([Section(file_path.stem, text)], 0)
-    if extension not in PANDOC_EXTENSIONS:
+        markdown = _pdf_markdown(file_path)
+        if markdown is None:
+            text = normalize_text(extract_text_from_pdf(file_path))
+            return ExtractedDocument([Section(file_path.stem, text)], 0)
+        document = json.loads(_pandoc(["-f", "markdown", "-t", "json"], markdown))
+    elif extension not in PANDOC_EXTENSIONS:
         raise ValueError(f"Unsupported file format: {extension}")
-
-    args = [str(file_path), "-t", "json"]
-    if extension in {".md", ".qmd", ".rmd", ".txt"}:
-        args.extend(["-f", "markdown"])
-    document = json.loads(_pandoc(args))
+    else:
+        args = [str(file_path), "-t", "json"]
+        if extension in {".md", ".qmd", ".rmd", ".txt"}:
+            args.extend(["-f", "markdown"])
+        document = json.loads(_pandoc(args))
 
     def render(blocks: list[dict[str, Any]]) -> str:
         section = {**document, "meta": {}, "blocks": blocks}
@@ -106,6 +111,29 @@ def extract_sections(file_path: Path, chapter_level: int = 1) -> ExtractedDocume
     else:
         sections = [Section(file_path.stem, text)]
     return ExtractedDocument(sections, matches)
+
+
+def _pdf_markdown(file_path: Path) -> str | None:
+    command = shutil.which("pdf2md")
+    if command is None:
+        return None
+    try:
+        result = subprocess.run(
+            [command, str(file_path.resolve()), "--raw"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        if not result.stdout.strip():
+            raise ValueError("pdf2md returned no Markdown.")
+        return result.stdout
+    except (OSError, subprocess.CalledProcessError, ValueError) as error:
+        warnings.warn(
+            f"pdf2md failed: {error}. Use pdftotext without PDF headings.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return None
 
 
 def extract_text_from_pdf(file_path: Path) -> str:

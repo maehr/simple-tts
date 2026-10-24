@@ -5,10 +5,11 @@ Convert documents to speech with [Kokoro TTS](https://github.com/hexgrad/kokoro)
 ## Features
 
 - Read PDF, DOCX, EPUB, Markdown, QMD, RMD, TXT, RST, and HTML files.
-- Select a voice and a speech speed from 0.5 to 2.0.
-- Write M4A, M4B, MP3, WAV, OGG, or Opus audio.
-- Add chapters to M4B files.
-- Write chapter navigation in a WebVTT sidecar file.
+- Select narrator voices and a speech speed from 0.5 to 2.0.
+- Write M4A, M4B, MP4, MP3, WAV, OGG, or Opus audio.
+- Add embedded chapters to M4B and MP4 files.
+- Write master audio, chapter audio, and WebVTT navigation for every conversion.
+- Read PDF headings with an optional local `pdf2md` command.
 - Use an available GPU with visible CPU fallback.
 - Keep audio memory use bounded by the text chunk size.
 
@@ -67,16 +68,36 @@ Use `--yes` to skip the confirmation prompt.
 simple-tts convert essay.md -v am_adam -s 1.3 -y
 ```
 
-### Add chapters and navigation
+### Chapters and navigation
 
-Use `--format m4b` for an AAC audiobook with embedded chapters.
-M4B and M4A use a default bitrate of 128 kbps.
+Use `--format m4b` or `--format mp4` for AAC audio with embedded chapters.
+M4A, M4B, and MP4 use a default bitrate of 128 kbps.
 
 ```bash
-simple-tts convert book.md --format m4b --chapter-level 2 --vtt --device auto
+simple-tts convert book.md --format mp4 --chapter-level 2
 ```
 
-This command writes `book.m4b` and `book.vtt` beside the input file.
+This command writes all outputs beside the input file.
+
+```text
+book.mp4
+book.vtt
+book_chapters/
+  01_first-chapter.mp4
+  01_first-chapter.vtt
+  02_second-chapter.mp4
+  02_second-chapter.vtt
+```
+
+Every conversion writes master audio, master VTT, chapter audio, and chapter VTT.
+All audio files use the selected format.
+This rule also applies to documents with one chapter.
+Chapter filenames contain a number and a safe form of the chapter title.
+Each chapter VTT starts at `00:00:00.000`.
+VTT cues contain chapter titles and span their chapters.
+They provide chapter navigation instead of narration captions.
+The CLI has no `--split`, `--vtt`, or `--no-vtt` switches.
+
 Only headings at level 2 start chapters in this example.
 The default chapter level is 1.
 Valid chapter levels range from 1 through 6.
@@ -84,25 +105,54 @@ Valid chapter levels range from 1 through 6.
 Each heading appears once in the narration, including headings at other levels.
 Text before the first selected heading forms an `Introduction` chapter.
 If no headings match, the chapter uses the input stem as its title.
-M4B and VTT requests show a warning when no headings match.
-PDF files form one section because PDF text extraction has no heading levels.
+The command shows a warning when no headings match.
 
 Each chapter starts before its heading audio.
 The final chapter ends at the final audio sample.
 Sample counts at 24,000 Hz determine chapter times and total duration.
 
-Use `--vtt` with any supported audio format.
-VTT cues contain chapter titles and span their chapters.
-VTT output is off by default.
-The CLI also accepts `--no-vtt` to disable it explicitly.
-
 ```bash
-simple-tts convert book.qmd --output book.m4a --chapter-level 2 --vtt
+simple-tts convert book.qmd --output book.m4a --chapter-level 2
 simple-tts convert book.rmd --output book.m4b --chapter-level 2
-simple-tts convert tests/minimal.epub --format m4b --vtt
+simple-tts convert tests/minimal.epub --format m4b
 ```
 
 If `--format` conflicts with the output suffix, conversion stops before synthesis.
+
+### PDF headings
+
+The command uses `pdf2md` when it finds this optional tool on `PATH`.
+It reads raw Markdown and uses the same chapter rules as other documents.
+The tool detects headings from PDF font structure.
+Heading quality depends on the PDF layout.
+
+To install the optional tool, follow the [pdf-inspector instructions](https://github.com/firecrawl/pdf-inspector#cli).
+
+```bash
+cargo install pdf-inspector
+```
+
+The command does not install `pdf2md` automatically.
+If `pdf2md` is missing, the command uses `pdftotext`.
+If `pdf2md` fails or returns empty output, the command warns before it uses `pdftotext`.
+The `pdftotext` fallback creates one section without PDF heading levels.
+This integration adds no OCR service.
+
+### Rotate narrator voices
+
+Separate voice IDs with commas to rotate narrators across chapters.
+
+```bash
+simple-tts convert book.md --voice af_bella,am_adam --format mp4
+```
+
+The first section uses the first voice.
+An introduction counts as a section.
+Each later section uses the next voice, then the rotation repeats.
+Every chunk within a section uses the same voice.
+All voices must share one Kokoro language code, which is the first character of each voice ID.
+For example, `af_bella` and `am_adam` share code `a`.
+The command rejects unknown voices, empty list entries, and mixed language codes before extraction.
 
 ### Select a device
 
@@ -128,12 +178,19 @@ See the [PyTorch MPS environment variables](https://docs.pytorch.org/docs/stable
 ### Audio storage
 
 The command writes each completed chunk to a temporary mono float32 PCM file.
-It encodes the PCM file once after synthesis completes.
+It encodes the master audio once after synthesis completes.
+It copies each chapter range to a temporary PCM file with bounded memory.
+It encodes each chapter once without another synthesis pass.
 Temporary PCM storage uses approximately 3.5 GB per ten hours of audio.
-Allow additional disk space for the encoded output.
-The output directory also holds the temporary encoded file before publication.
+Allow additional disk space for the largest chapter PCM file and both sets of encoded audio.
+The output directory holds staged outputs and previous outputs during publication.
 
-The command publishes the audio and optional VTT after synthesis and encoding succeed.
+The command publishes all outputs after synthesis and encoding succeed.
+Each conversion replaces the complete generated chapter folder and both master files.
+Store other files outside the generated chapter folder.
+The input file must also remain outside this folder.
+If publication fails, the command restores previous outputs.
+If restoration fails, the error identifies the backup folder for recovery.
 It removes temporary files after success, failure, or cancellation.
 WAV output uses RF64 automatically when the file exceeds the standard WAV size limit.
 The library retains its array-based audio helpers.
@@ -146,12 +203,11 @@ simple-tts convert --help
 
 | Option | Purpose | Default |
 | --- | --- | --- |
-| `-v`, `--voice` | Select a voice ID. | `af_bella` |
+| `-v`, `--voice` | Select comma-separated voice IDs for chapter rotation. | `af_bella` |
 | `-o`, `--output` | Set the output path and infer its format. | Beside the input |
 | `-s`, `--speed` | Set the speech speed from 0.5 to 2.0. | `1.1` |
-| `-f`, `--format` | Select `m4a`, `m4b`, `mp3`, `wav`, `ogg`, or `opus`. | `m4a` |
+| `-f`, `--format` | Select `m4a`, `m4b`, `mp4`, `mp3`, `wav`, `ogg`, or `opus`. | `m4a` |
 | `--chapter-level` | Select the heading level from 1 through 6. | `1` |
-| `--vtt`, `--no-vtt` | Write chapter navigation beside the audio. | Off |
 | `--device` | Select `auto`, `cuda`, `mps`, or `cpu`. | `auto` |
 | `-y`, `--yes` | Skip the confirmation prompt. | Off |
 

@@ -232,6 +232,7 @@ def test_pdf_is_one_section(tmp_path, monkeypatch):
 
     source = tmp_path / "book.pdf"
     source.touch()
+    monkeypatch.setattr(converter.shutil, "which", lambda command: None)
     monkeypatch.setattr(converter, "extract_text_from_pdf", lambda path: "PDF text")
     result = converter.extract_sections(source, 2)
     assert result.sections == [converter.Section("book", "PDF text")]
@@ -277,3 +278,63 @@ def test_epub_chapter_extraction():
     for section in result.sections:
         assert section.text.startswith(section.title)
         assert section.text.count(section.title) == 1
+
+
+@pytest.mark.parametrize("markdown", ["## First\n\nBody.\n\n## Last\n\nEnd.", "Body."])
+def test_pdf_markdown_headings(tmp_path, monkeypatch, markdown):
+    """Optional pdf2md output uses the real Pandoc chapter parser."""
+    import subprocess
+
+    from simple_tts import converter
+
+    source = tmp_path / "book with spaces.pdf"
+    source.touch()
+    run = subprocess.run
+    calls = []
+
+    def convert(command, **kwargs):
+        if command[0] == "/local/pdf2md":
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, markdown, "")
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(converter.shutil, "which", lambda command: "/local/pdf2md")
+    monkeypatch.setattr(converter.subprocess, "run", convert)
+    result = converter.extract_sections(source, 2)
+    assert calls == [["/local/pdf2md", str(source), "--raw"]]
+    if markdown.startswith("##"):
+        assert result.matched_headings == 2
+        assert result.sections == [
+            converter.Section("First", "First\n\nBody."),
+            converter.Section("Last", "Last\n\nEnd."),
+        ]
+    else:
+        assert result.matched_headings == 0
+        assert result.sections == [converter.Section(source.stem, "Body.")]
+
+
+@pytest.mark.parametrize("failure", ["empty", "exit", "missing"])
+def test_pdf_markdown_failure_falls_back(tmp_path, monkeypatch, failure):
+    """Broken optional extraction warns before the pdftotext fallback."""
+    import subprocess
+
+    from simple_tts import converter
+
+    source = tmp_path / "book.pdf"
+    source.touch()
+
+    def run(command, **kwargs):
+        if failure == "exit":
+            raise subprocess.CalledProcessError(1, command, stderr="bad PDF")
+        if failure == "missing":
+            raise FileNotFoundError("pdf2md disappeared")
+        return subprocess.CompletedProcess(command, 0, " \n", "")
+
+    monkeypatch.setattr(converter.shutil, "which", lambda command: "/local/pdf2md")
+    monkeypatch.setattr(converter.subprocess, "run", run)
+    monkeypatch.setattr(
+        converter, "extract_text_from_pdf", lambda path: "Fallback text"
+    )
+    with pytest.warns(RuntimeWarning, match="Use pdftotext"):
+        result = converter.extract_sections(source)
+    assert result.sections == [converter.Section("book", "Fallback text")]

@@ -8,13 +8,18 @@ Version numbers follow the [versioning policy](README.md#versioning).
 
 - BREAKING CHANGE: `load_tts()` returns a pipeline wrapper with device state.
 - BREAKING CHANGE: Missing Kokoro raises an error. Passing `None` to `synthesize()` also raises an error.
-- BREAKING CHANGE: VTT output defaults to off and contains chapter titles instead of narration captions.
+- BREAKING CHANGE: Every conversion writes master audio, chapter audio, and VTT navigation files.
+- BREAKING CHANGE: The CLI removes `--vtt` and `--no-vtt`. VTT files contain chapter titles instead of narration captions.
 
 ### Added
 
-- M4B output includes AAC audio at 128 kbps and embedded chapters.
+- M4B and MP4 output include AAC audio at 128 kbps and embedded chapters.
+- The generated chapter folder contains numbered audio files and matching VTT files with local timestamps.
+- The optional local `pdf2md` command provides PDF headings through raw Markdown and Pandoc.
+- PDF extraction uses `pdftotext` when `pdf2md` is missing, fails, or returns empty output.
+- Comma-separated `--voice` IDs rotate once per section, including the introduction.
+- Voice rotation requires one shared Kokoro language code and reuses one pipeline.
 - `--chapter-level` selects one heading level from 1 through 6.
-- `--vtt` writes chapter navigation beside any supported audio output.
 - `--device` selects `auto`, `cuda`, `mps`, or `cpu`.
 - Structured extraction preserves Pandoc headings, including EPUB headings, before it renders narration text.
 - Tests cover chapter extraction, audio memory use, device retries, cleanup, and real FFmpeg output.
@@ -24,7 +29,9 @@ Version numbers follow the [versioning policy](README.md#versioning).
 - M4A remains the default audio format.
 - An explicit output suffix selects the audio format.
 - The CLI writes each completed chunk to a temporary mono float32 PCM file at 24,000 Hz.
-- The CLI encodes the PCM file once after synthesis completes.
+- The CLI encodes the master audio once after synthesis completes.
+- Chapter exports copy exact PCM sample ranges with bounded memory and encode each chapter once.
+- Every conversion replaces the complete generated chapter folder after all exports succeed.
 - Audio memory use stays bounded by the text chunk size.
 - Sample counts determine chapter boundaries, VTT times, and total duration.
 - Auto mode prefers CUDA, then MPS, then CPU.
@@ -46,6 +53,7 @@ Version numbers follow the [versioning policy](README.md#versioning).
 - Missing Kokoro and empty synthesis results produce clear errors.
 - The CLI publishes outputs only after synthesis and encoding succeed.
 - The CLI removes temporary files after success, failure, or cancellation.
+- Publication failures restore previous outputs. Failed restoration preserves backups for recovery.
 
 ## 0.1.0
 

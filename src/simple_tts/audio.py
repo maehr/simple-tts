@@ -10,6 +10,7 @@ Examples:
 """
 
 import html
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -20,10 +21,11 @@ import numpy as np
 import soundfile as sf
 
 SAMPLE_RATE = 24000
-SUPPORTED_FORMATS = {"m4a", "m4b", "mp3", "wav", "ogg", "opus"}
+SUPPORTED_FORMATS = {"m4a", "m4b", "mp4", "mp3", "wav", "ogg", "opus"}
 CODECS = {
     "m4a": "aac",
     "m4b": "aac",
+    "mp4": "aac",
     "mp3": "libmp3lame",
     "ogg": "libvorbis",
     "opus": "libopus",
@@ -112,7 +114,7 @@ def encode_pcm(
     chapters: list[Chapter] | None = None,
     bitrate: str = "128k",
 ) -> None:
-    """Encode raw mono float32 PCM once, with optional M4B chapters."""
+    """Encode raw mono float32 PCM, with optional M4B or MP4 chapters."""
     if format_type not in SUPPORTED_FORMATS:
         raise ValueError(f"Unsupported audio format: {format_type}")
     if input_path.stat().st_size == 0:
@@ -130,7 +132,7 @@ def encode_pcm(
             "-i",
             str(input_path),
         ]
-        if format_type == "m4b" and chapters:
+        if format_type in {"m4b", "mp4"} and chapters:
             metadata = Path(directory) / "chapters.ffmeta"
             write_ffmetadata(chapters, metadata)
             cmd.extend(
@@ -153,10 +155,47 @@ def encode_pcm(
             cmd.extend(["-q:a", "4"])
         else:
             cmd.extend(["-b:a", bitrate])
-        if format_type in {"m4a", "m4b"}:
+        if format_type in {"m4a", "m4b", "mp4"}:
             cmd.extend(["-f", "mp4"])
         cmd.append(str(output_path))
         _run_ffmpeg(cmd)
+
+
+def export_chapters(
+    input_path: Path,
+    output_directory: Path,
+    format_type: str,
+    chapters: list[Chapter],
+) -> None:
+    """Encode exact PCM ranges with bounded memory and local VTT times."""
+    output_directory.mkdir()
+    width = max(2, len(str(len(chapters))))
+    with (
+        tempfile.TemporaryDirectory(prefix="simple-tts-chapter-") as scratch,
+        input_path.open("rb") as source,
+    ):
+        pcm = Path(scratch) / "chapter.f32le"
+        for index, chapter in enumerate(chapters, 1):
+            slug = re.sub(r"[\W_]+", "-", chapter.title.casefold()).strip("-")
+            slug = slug[:60].rstrip("-") or "chapter"
+            name = f"{index:0{width}d}_{slug}"
+            samples = chapter.end_sample - chapter.start_sample
+            if chapter.start_sample < 0 or samples <= 0:
+                raise ValueError("Chapter bounds must describe a nonempty PCM range.")
+            remaining = samples * 4
+            source.seek(chapter.start_sample * 4)
+            with pcm.open("wb") as target:
+                while remaining:
+                    block = source.read(min(remaining, 1024 * 1024))
+                    if not block:
+                        raise ValueError("Chapter bounds exceed the PCM file.")
+                    target.write(block)
+                    remaining -= len(block)
+            local = [Chapter(chapter.title, 0, samples)]
+            encode_pcm(
+                pcm, output_directory / f"{name}.{format_type}", format_type, local
+            )
+            write_vtt(local, output_directory / f"{name}.vtt")
 
 
 def concatenate_audio(chunks: list[np.ndarray]) -> np.ndarray:
