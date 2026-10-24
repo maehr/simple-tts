@@ -34,8 +34,7 @@ def test_auto_device_selection(monkeypatch, cuda, mps, expected):
     report = Mock()
     pipeline = tts.load_tts("bf_emma", report=report)
     assert pipeline.device == expected
-    assert pipeline.pipeline.device == expected
-    assert pipeline.pipeline.lang_code == "b"
+    assert pipeline.lang_code == "b"
     assert any(f"Device: {expected}" in call.args[0] for call in report.call_args_list)
     if expected in {"cpu", "mps"}:
         assert any("CPU" in call.args[0] for call in report.call_args_list)
@@ -47,7 +46,6 @@ def test_explicit_device(monkeypatch, device):
     set_devices(monkeypatch, cuda=True, mps=True)
     pipeline = tts.load_tts(device=device)
     assert pipeline.device == device
-    assert pipeline.pipeline.device == device
 
 
 @pytest.mark.parametrize("device", ["cuda", "mps"])
@@ -69,8 +67,7 @@ def test_initialization_falls_back_once(monkeypatch, device):
     report = Mock()
     monkeypatch.setattr(tts, "_create_pipeline", factory)
     pipeline = tts.load_tts(report=report)
-    assert pipeline.device == "cpu"
-    assert pipeline.pipeline is cpu
+    assert pipeline is cpu
     assert [call.args[1] for call in factory.call_args_list] == [device, "cpu"]
     assert any("Retry on CPU" in call.args[0] for call in report.call_args_list)
 
@@ -105,52 +102,12 @@ def test_missing_kokoro_is_an_error(monkeypatch):
         tts.synthesize(None, "Hello")
 
 
-def test_gpu_synthesis_retry_discards_partial_audio(monkeypatch):
-    """A partly yielded GPU chunk never duplicates samples on CPU."""
-
-    def gpu(text, **kwargs):
-        yield text, text, np.full(17, 9, dtype=np.float32)
-        raise RuntimeError("GPU failed mid-chunk")
-
-    def cpu(text, **kwargs):
-        yield text, text, np.full(11, 2, dtype=np.float32)
-        yield text, text, np.full(3, 3, dtype=np.float32)
-
-    factory = Mock(return_value=cpu)
-    monkeypatch.setattr(tts, "_create_pipeline", factory)
-    report = Mock()
-    pipeline = tts.TTSPipeline(gpu, "af_bella", "auto", "mps", report)
-    first = tts.synthesize(pipeline, "First")
-    second = tts.synthesize(pipeline, "Second")
-    assert first.tolist() == second.tolist() == [2] * 11 + [3] * 3
-    assert pipeline.device == "cpu"
-    factory.assert_called_once_with("af_bella", "cpu")
-    assert any("Retry this chunk on CPU" in c.args[0] for c in report.call_args_list)
-
-
-@pytest.mark.parametrize("device", ["cuda", "mps", "cpu"])
-def test_explicit_synthesis_failure(monkeypatch, device):
-    """Explicit GPU failures never silently switch to CPU."""
-    factory = Mock()
-    monkeypatch.setattr(tts, "_create_pipeline", factory)
-    pipeline = tts.TTSPipeline(
-        Mock(side_effect=RuntimeError("failed")), "a", device, device, Mock()
-    )
-    with pytest.raises(RuntimeError, match=f"Synthesis failed on {device}"):
+def test_synthesis_failure_raises():
+    """Synthesis errors propagate directly."""
+    failed = Mock(side_effect=RuntimeError("synthesis error"))
+    pipeline = failed
+    with pytest.raises(RuntimeError, match="synthesis error"):
         tts.synthesize(pipeline, "Hello")
-    factory.assert_not_called()
-
-
-def test_cpu_retry_failure_stops(monkeypatch):
-    """A failed CPU chunk gets no further retries."""
-    failed = Mock(side_effect=RuntimeError("failed"))
-    factory = Mock(return_value=failed)
-    monkeypatch.setattr(tts, "_create_pipeline", factory)
-    pipeline = tts.TTSPipeline(failed, "af_bella", "auto", "cuda", Mock())
-    with pytest.raises(RuntimeError, match="CPU retry failed"):
-        tts.synthesize(pipeline, "Hello")
-    assert factory.call_count == 1
-    assert failed.call_count == 2
 
 
 def test_array_helpers_remain_available():
@@ -190,7 +147,7 @@ def checked_import(name, *args, **kwargs):
     return original(name, *args, **kwargs)
 builtins.__import__ = checked_import
 pipeline = load_tts()
-assert pipeline.device == "mps"
+assert pipeline["device"] == "mps"
 assert events == ["torch", "kokoro"]
 """
     environment = {**os.environ, "PYTORCH_ENABLE_MPS_FALLBACK": "0"}
@@ -198,3 +155,45 @@ assert events == ["torch", "kokoro"]
         [sys.executable, "-c", script], env=environment, capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_invalid_device_rejected():
+    """Unknown devices fail before model initialization."""
+    with pytest.raises(ValueError, match="Device must be"):
+        tts.load_tts(device="unknown")
+
+
+def test_missing_torch_reports_install_hint(monkeypatch):
+    """Missing PyTorch reports the required package installation."""
+    monkeypatch.setitem(sys.modules, "torch", None)
+    with pytest.raises(RuntimeError, match="PyTorch is missing"):
+        tts.load_tts()
+
+
+def test_synthesis_skips_empty_segments_and_moves_tensors_to_cpu():
+    """Tensor segments move to CPU before conversion and preserve sample order."""
+    tensor = Mock()
+    tensor.detach.return_value.cpu.return_value.numpy.return_value = np.array(
+        [0.25, -0.5]
+    )
+    pipeline = Mock(
+        return_value=iter(
+            [
+                ("", "", None),
+                ("", "", tensor),
+                ("", "", np.array([1.0])),
+            ]
+        )
+    )
+    audio = tts.synthesize(pipeline, "Hello", voice="am_adam", speed=0.9)
+    np.testing.assert_array_equal(audio, [0.25, -0.5, 1.0])
+    assert audio.dtype == np.float32
+    tensor.detach.return_value.cpu.assert_called_once()
+    pipeline.assert_called_once_with("Hello", voice="am_adam", speed=0.9)
+
+
+def test_synthesis_without_segments_returns_empty_audio():
+    """A model with no audio segments returns an empty float32 array."""
+    audio = tts.synthesize(lambda *args, **kwargs: iter([]), "Hello")
+    assert audio.size == 0
+    assert audio.dtype == np.float32

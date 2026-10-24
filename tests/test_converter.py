@@ -232,7 +232,6 @@ def test_pdf_is_one_section(tmp_path, monkeypatch):
 
     source = tmp_path / "book.pdf"
     source.touch()
-    monkeypatch.setattr(converter.shutil, "which", lambda command: None)
     monkeypatch.setattr(converter, "extract_text_from_pdf", lambda path: "PDF text")
     result = converter.extract_sections(source, 2)
     assert result.sections == [converter.Section("book", "PDF text")]
@@ -280,61 +279,127 @@ def test_epub_chapter_extraction():
         assert section.text.count(section.title) == 1
 
 
-@pytest.mark.parametrize("markdown", ["## First\n\nBody.\n\n## Last\n\nEnd.", "Body."])
-def test_pdf_markdown_headings(tmp_path, monkeypatch, markdown):
-    """Optional pdf2md output uses the real Pandoc chapter parser."""
-    import subprocess
+def test_section_extraction_calls_pandoc_once(tmp_path, monkeypatch):
+    """Chapter count does not increase the number of Pandoc processes."""
+    from simple_tts import converter
+
+    source = tmp_path / "book.epub"
+    source.touch()
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        markdown = "\n\n".join(f"# Chapter {i}\n\nBody." for i in range(40))
+        return subprocess.CompletedProcess(command, 0, stdout=markdown)
+
+    monkeypatch.setattr(converter.subprocess, "run", run)
+    result = converter.extract_sections(source)
+    assert len(calls) == 1
+    assert len(result.sections) == 40
+    assert result.matched_headings == 40
+
+
+def test_inline_formatting_preserves_literal_punctuation(tmp_path):
+    """Markdown cleanup retains escaped punctuation and word underscores."""
+    from simple_tts.converter import extract_sections
+
+    source = tmp_path / "book.md"
+    source.write_text(
+        "# A **bold** title\n\nUse `snake_case` and snake_case. A \\*literal\\* star."
+    )
+    result = extract_sections(source)
+    assert result.sections[0].title == "A bold title"
+    assert "snake_case and snake_case" in result.sections[0].text
+    assert "*literal*" in result.sections[0].text
+
+
+@pytest.mark.parametrize(
+    "helper",
+    ["extract_sections", "extract_text_from_document", "extract_text_from_pdf"],
+)
+@pytest.mark.parametrize("failure", ["missing-tool", "bad-document"])
+def test_extractor_errors_include_actionable_details(
+    tmp_path, monkeypatch, helper, failure
+):
+    """External tool failures identify the missing tool or retain its error text."""
+    from unittest.mock import Mock
 
     from simple_tts import converter
 
-    source = tmp_path / "book with spaces.pdf"
+    source = tmp_path / ("book.pdf" if helper.endswith("pdf") else "book.md")
     source.touch()
-    run = subprocess.run
-    calls = []
-
-    def convert(command, **kwargs):
-        if command[0] == "/local/pdf2md":
-            calls.append(command)
-            return subprocess.CompletedProcess(command, 0, markdown, "")
-        return run(command, **kwargs)
-
-    monkeypatch.setattr(converter.shutil, "which", lambda command: "/local/pdf2md")
-    monkeypatch.setattr(converter.subprocess, "run", convert)
-    result = converter.extract_sections(source, 2)
-    assert calls == [["/local/pdf2md", str(source), "--raw"]]
-    if markdown.startswith("##"):
-        assert result.matched_headings == 2
-        assert result.sections == [
-            converter.Section("First", "First\n\nBody."),
-            converter.Section("Last", "Last\n\nEnd."),
-        ]
-    else:
-        assert result.matched_headings == 0
-        assert result.sections == [converter.Section(source.stem, "Body.")]
+    error = (
+        FileNotFoundError()
+        if failure == "missing-tool"
+        else subprocess.CalledProcessError(1, "extract", stderr="invalid document")
+    )
+    monkeypatch.setattr(converter.subprocess, "run", Mock(side_effect=error))
+    with pytest.raises(
+        RuntimeError,
+        match="not found" if failure == "missing-tool" else "invalid document",
+    ):
+        getattr(converter, helper)(source)
 
 
-@pytest.mark.parametrize("failure", ["empty", "exit", "missing"])
-def test_pdf_markdown_failure_falls_back(tmp_path, monkeypatch, failure):
-    """Broken optional extraction warns before the pdftotext fallback."""
-    import subprocess
+@pytest.mark.parametrize(
+    "helper",
+    ["extract_sections", "extract_text_from_document", "extract_text_from_pdf"],
+)
+def test_extraction_helpers_reject_missing_files(tmp_path, helper):
+    """Each public extraction helper rejects missing input files."""
+    from simple_tts import converter
+
+    with pytest.raises(FileNotFoundError, match="not found"):
+        getattr(converter, helper)(tmp_path / "missing.md")
+
+
+@pytest.mark.parametrize("level", [0, 7])
+def test_invalid_chapter_levels_fail_before_extraction(tmp_path, level):
+    """Library callers receive the same chapter level limits as CLI callers."""
+    from simple_tts.converter import extract_sections
+
+    with pytest.raises(ValueError, match="Chapter level"):
+        extract_sections(tmp_path / "missing.md", level)
+
+
+def test_sections_reject_unsupported_input(tmp_path):
+    """Unsupported documents fail without invoking Pandoc."""
+    from simple_tts.converter import extract_sections
+
+    source = tmp_path / "book.xyz"
+    source.touch()
+    with pytest.raises(ValueError, match="Unsupported file format"):
+        extract_sections(source)
+
+
+@pytest.mark.parametrize("sections", [False, True])
+def test_pdf_extraction_command(tmp_path, monkeypatch, sections):
+    """PDF extraction uses layout preservation and returns the extracted text."""
+    from unittest.mock import Mock
 
     from simple_tts import converter
 
     source = tmp_path / "book.pdf"
     source.touch()
-
-    def run(command, **kwargs):
-        if failure == "exit":
-            raise subprocess.CalledProcessError(1, command, stderr="bad PDF")
-        if failure == "missing":
-            raise FileNotFoundError("pdf2md disappeared")
-        return subprocess.CompletedProcess(command, 0, " \n", "")
-
-    monkeypatch.setattr(converter.shutil, "which", lambda command: "/local/pdf2md")
+    run = Mock(return_value=subprocess.CompletedProcess([], 0, stdout="PDF text"))
     monkeypatch.setattr(converter.subprocess, "run", run)
-    monkeypatch.setattr(
-        converter, "extract_text_from_pdf", lambda path: "Fallback text"
-    )
-    with pytest.warns(RuntimeWarning, match="Use pdftotext"):
+    if sections:
         result = converter.extract_sections(source)
-    assert result.sections == [converter.Section("book", "Fallback text")]
+        assert result.sections == [converter.Section("book", "PDF text")]
+    else:
+        assert converter.extract_text(source) == "PDF text"
+    run.assert_called_once_with(
+        ["pdftotext", "-layout", str(source), "-"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def test_empty_document_has_no_sections(tmp_path):
+    """Whitespace without headings produces no narration sections."""
+    from simple_tts.converter import extract_sections
+
+    source = tmp_path / "empty.md"
+    source.write_text("\n\n ")
+    assert extract_sections(source).sections == []

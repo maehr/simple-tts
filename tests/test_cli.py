@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from simple_tts.cli import app, build_vtt, format_duration, format_timestamp
+from simple_tts.cli import app, format_duration
 
 runner = CliRunner()
 
@@ -29,27 +29,6 @@ class TestFormatDuration:
     def test_handles_zero(self):
         """Test handling of zero duration."""
         assert format_duration(0) == "0s"
-
-
-class TestFormatTimestamp:
-    """Tests for WebVTT timestamp formatting."""
-
-    def test_formats_milliseconds(self):
-        """Test timestamp formatting to hh:mm:ss.mmm."""
-        assert format_timestamp(1.234) == "00:00:01.234"
-        assert format_timestamp(3661.789) == "01:01:01.789"
-
-
-class TestBuildVTT:
-    """Tests for building WebVTT captions."""
-
-    def test_builds_captions(self):
-        """Test WebVTT construction from chunks and durations."""
-        vtt = build_vtt(["Hello world", "Next line"], [1.0, 2.5])
-        assert "WEBVTT" in vtt
-        assert "00:00:00.000 --> 00:00:01.000" in vtt
-        assert "00:00:01.000 --> 00:00:03.500" in vtt
-        assert "Hello world" in vtt and "Next line" in vtt
 
 
 class TestCLIVersion:
@@ -130,9 +109,6 @@ def conversion(tmp_path, monkeypatch):
     source.write_text("Preamble.\n\n## First\n\nBody.\n\n## Last\n\nEnd.")
     monkeypatch.setattr(cli, "check_dependencies", lambda *args: True)
     monkeypatch.setattr(cli, "load_tts", lambda *args, **kwargs: object())
-    monkeypatch.setattr(
-        cli, "export_chapters", lambda pcm, directory, *args: directory.mkdir()
-    )
     return cli, source
 
 
@@ -160,6 +136,7 @@ def test_output_format_resolution(
     def encode(pcm, output, format_type, chapters):
         calls.append(format_type)
         assert not (source.parent / output_name).exists()
+        assert output.parent.parent == source.parent
         output.write_bytes(b"encoded")
 
     monkeypatch.setattr(cli, "synthesize", lambda *args, **kwargs: np.zeros(240))
@@ -186,8 +163,8 @@ def test_output_format_resolution(
         ["--voice", "af_bella,"],
         ["--voice", "af_bella,unknown"],
         ["--voice", "af_bella,bf_emma"],
-        ["--vtt"],
         ["--no-vtt"],
+        ["--vtt"],
         ["--split"],
     ],
 )
@@ -206,10 +183,8 @@ def test_rejected_options_precede_synthesis(conversion, monkeypatch, arguments):
     load.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "format_type", ["m4a", "m4b", "mp4", "mp3", "wav", "ogg", "opus"]
-)
-def test_sample_boundaries_and_vtt(conversion, monkeypatch, format_type):
+@pytest.mark.parametrize("format_type", ["m4a", "m4b", "mp4", "mp3", "wav", "opus"])
+def test_sample_boundaries(conversion, monkeypatch, format_type):
     """Each chapter begins before its heading and ends at its final sample."""
     import numpy as np
 
@@ -254,11 +229,6 @@ def test_sample_boundaries_and_vtt(conversion, monkeypatch, format_type):
         Chapter("Last", 60000, 72000),
     ]
     assert spoken == ["Preamble.", "First\n\nBody.", "Last\n\nEnd."]
-    assert source.with_suffix(".vtt").read_text() == (
-        "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nIntroduction\n\n"
-        "00:00:01.000 --> 00:00:02.500\nFirst\n\n"
-        "00:00:02.500 --> 00:00:03.000\nLast\n\n"
-    )
     assert all(not path.parent.exists() for path in pcm_paths)
     assert not list(source.parent.glob(".simple-tts-*"))
 
@@ -327,9 +297,7 @@ def test_failure_cleanup_and_publication(conversion, monkeypatch, failure_stage)
 
     cli, source = conversion
     output = source.with_suffix(".m4b")
-    sidecar = source.with_suffix(".vtt")
     output.write_bytes(b"old audio")
-    sidecar.write_text("old navigation")
     directories = []
     temporary_directory = cli.tempfile.TemporaryDirectory
 
@@ -359,7 +327,6 @@ def test_failure_cleanup_and_publication(conversion, monkeypatch, failure_stage)
     result = runner.invoke(app, ["convert", str(source), "--format", "m4b", "-y"])
     assert result.exit_code != 0
     assert output.read_bytes() == b"old audio"
-    assert sidecar.read_text() == "old navigation"
     assert directories and all(not directory.exists() for directory in directories)
 
 
@@ -381,48 +348,9 @@ def test_no_audio_is_an_error(conversion, monkeypatch):
     encode.assert_not_called()
 
 
-def test_cli_gpu_retry_has_no_duplicate_samples(tmp_path, monkeypatch):
-    """A real CLI spool contains only the completed CPU retry."""
-    from unittest.mock import Mock
-
-    import numpy as np
-
-    from simple_tts import cli, tts
-
-    source = tmp_path / "book.md"
-    source.write_text("# First\n\nBody.\n\n# Last\n\nEnd.")
-
-    def gpu(text, **kwargs):
-        yield text, text, np.ones(77, dtype=np.float32)
-        raise RuntimeError("GPU failure")
-
-    retried_voices = []
-
-    def cpu(text, **kwargs):
-        retried_voices.append(kwargs["voice"])
-        yield text, text, np.full(23, 2, dtype=np.float32)
-
-    engine = tts.TTSPipeline(gpu, "af_bella", "auto", "mps", print)
-    factory = Mock(return_value=cpu)
-    monkeypatch.setattr(tts, "_create_pipeline", factory)
-    monkeypatch.setattr(cli, "load_tts", lambda *args, **kwargs: engine)
-
-    def encode(pcm, output, *args):
-        assert np.fromfile(pcm, dtype="<f4").tolist() == [2] * 46
-        output.write_bytes(b"encoded")
-
-    monkeypatch.setattr(cli, "encode_pcm", encode)
-    result = runner.invoke(
-        app, ["convert", str(source), "--voice", "af_bella,am_adam", "-y"]
-    )
-    assert result.exit_code == 0, result.output
-    assert factory.call_count == 1
-    assert retried_voices == ["af_bella", "am_adam"]
-
-
 @pytest.mark.parametrize("format_type", ["m4b", "mp4"])
-def test_real_cli_m4b_and_vtt(tmp_path, format_type):
-    """The CLI sends matching chapter titles and times to FFmpeg and WebVTT."""
+def test_real_cli_embedded_chapters(tmp_path, format_type):
+    """The CLI writes one file with embedded chapter titles and times."""
     import json
     import subprocess
 
@@ -469,25 +397,7 @@ def test_real_cli_m4b_and_vtt(tmp_path, format_type):
     assert [
         (chapter["start_time"], chapter["end_time"]) for chapter in probe["chapters"]
     ] == [("0.000000", "0.100000"), ("0.100000", "0.200000")]
-    assert output.with_suffix(".vtt").read_text() == (
-        "WEBVTT\n\n00:00:00.000 --> 00:00:00.100\nÜber &amp; &lt;雪&gt;\n\n"
-        "00:00:00.100 --> 00:00:00.200\nLast\n\n"
-    )
-    directory = tmp_path / "book_chapters"
-    assert len(list(directory.glob(f"*.{format_type}"))) == 2
-    assert len(list(directory.glob("*.vtt"))) == 2
-    for path in sorted(directory.glob(f"*.{format_type}")):
-        chapter_probe = json.loads(
-            subprocess.run(
-                ["ffprobe", "-v", "error", "-show_chapters", "-of", "json", str(path)],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-        )
-        assert chapter_probe["chapters"][0]["start_time"] == "0.000000"
-        assert chapter_probe["chapters"][0]["end_time"] == "0.100000"
-        assert "00:00:00.000 --> 00:00:00.100" in path.with_suffix(".vtt").read_text()
+    assert {path.name for path in tmp_path.iterdir()} == {source.name, output.name}
 
 
 def test_voice_rotation_reuses_one_pipeline(conversion, monkeypatch):
@@ -525,166 +435,13 @@ def test_voice_rotation_reuses_one_pipeline(conversion, monkeypatch):
     assert spoken == ["af_bella"] * 2 + ["am_adam"] * 2 + ["af_bella"] * 2
 
 
-def test_all_outputs_replace_previous_conversion(conversion, monkeypatch):
-    """Default conversion replaces the full generated set without stale tracks."""
-    import numpy as np
-
-    from simple_tts import audio
-
-    cli, source = conversion
-    source.write_text("# First\n\nBody.\n\n# Last\n\nEnd.")
-    spoken = []
-
-    def synthesize(*args, **kwargs):
-        spoken.append(kwargs["voice"])
-        return np.zeros(2400, dtype=np.float32)
-
-    def encode(pcm, output, *args):
-        output.write_bytes(b"encoded")
-
-    monkeypatch.setattr(cli, "synthesize", synthesize)
-    monkeypatch.setattr(cli, "encode_pcm", encode)
-    monkeypatch.setattr(audio, "encode_pcm", encode)
-    monkeypatch.setattr(cli, "export_chapters", audio.export_chapters)
-    arguments = ["convert", str(source), "-y"]
-    result = runner.invoke(app, arguments)
-    assert result.exit_code == 0, result.output
-    directory = source.parent / "book_chapters"
-    assert {path.name for path in directory.iterdir()} == {
-        "01_first.m4a",
-        "01_first.vtt",
-        "02_last.m4a",
-        "02_last.vtt",
-    }
-    assert len(spoken) == 2
-
-    source.write_text("No headings now.")
-    result = runner.invoke(app, arguments)
-    assert result.exit_code == 0, result.output
-    assert {path.name for path in directory.iterdir()} == {"01_book.m4a", "01_book.vtt"}
-    assert source.with_suffix(".m4a").read_bytes() == b"encoded"
-    assert "00:00:00.000 --> 00:00:00.100" in source.with_suffix(".vtt").read_text()
-    assert len(spoken) == 3
-    assert not list(source.parent.glob(".simple-tts-*"))
-
-
-@pytest.mark.parametrize("cancel", [False, True])
-def test_chapter_encoding_failure_preserves_outputs(conversion, monkeypatch, cancel):
-    """Late export failures and cancellation preserve every previous output."""
-    import numpy as np
-
-    cli, source = conversion
-    output = source.with_suffix(".m4a")
-    sidecar = source.with_suffix(".vtt")
-    directory = source.parent / "book_chapters"
-    output.write_bytes(b"old audio")
-    sidecar.write_text("old VTT")
-    directory.mkdir()
-    (directory / "old.m4a").write_bytes(b"old track")
-
-    def fail(pcm, staging, *args):
-        staging.mkdir()
-        (staging / "partial.m4a").touch()
-        if cancel:
-            raise KeyboardInterrupt
-        raise RuntimeError("chapter encoder failed")
-
-    monkeypatch.setattr(cli, "synthesize", lambda *args, **kwargs: np.zeros(240))
-    monkeypatch.setattr(cli, "encode_pcm", lambda pcm, path, *args: path.touch())
-    monkeypatch.setattr(cli, "export_chapters", fail)
-    result = runner.invoke(app, ["convert", str(source), "-y"])
-    assert result.exit_code == (130 if cancel else 1)
-    assert output.read_bytes() == b"old audio"
-    assert sidecar.read_text() == "old VTT"
-    assert [path.name for path in directory.iterdir()] == ["old.m4a"]
-    assert (directory / "old.m4a").read_bytes() == b"old track"
-    assert not list(source.parent.glob(".simple-tts-*"))
-
-
-@pytest.mark.parametrize("failure_step", range(6))
-def test_publication_failure_restores_files_and_directory(
-    tmp_path, monkeypatch, failure_step
-):
-    """A failure at any backup or publication step restores previous outputs."""
-    from simple_tts.cli import publish_outputs
-
-    staging = tmp_path / "staging"
-    staging.mkdir()
-    outputs = []
-    for name in ["book.m4a", "book.vtt", "book_chapters"]:
-        source = staging / name
-        destination = tmp_path / name
-        if name == "book_chapters":
-            source.mkdir()
-            destination.mkdir()
-            (source / "new").write_text("new")
-            (destination / "old").write_text("old")
-        else:
-            source.write_text("new")
-            destination.write_text("old")
-        outputs.append((source, destination))
-    replace = Path.replace
-    calls = 0
-
-    def fail_once(source, destination):
-        nonlocal calls
-        step = calls
-        calls += 1
-        if step == failure_step:
-            raise OSError("publication failed")
-        return replace(source, destination)
-
-    monkeypatch.setattr(Path, "replace", fail_once)
-    with pytest.raises(OSError, match="publication failed"):
-        publish_outputs(outputs)
-    assert (tmp_path / "book.m4a").read_text() == "old"
-    assert (tmp_path / "book.vtt").read_text() == "old"
-    assert [path.name for path in (tmp_path / "book_chapters").iterdir()] == ["old"]
-    assert not list(tmp_path.glob(".simple-tts-backup-*"))
-
-
-def test_failed_restoration_preserves_recovery_files(tmp_path, monkeypatch):
-    """A second filesystem failure leaves old output recoverable outside staging."""
-    from simple_tts.cli import publish_outputs
-
-    staging = tmp_path / "staging"
-    staging.mkdir()
-    source = staging / "book.m4a"
-    source.write_text("new")
-    destination = tmp_path / "book.m4a"
-    destination.write_text("old")
-    replace = Path.replace
-
-    def fail_after_backup(path, target):
-        if path == destination:
-            return replace(path, target)
-        raise OSError("filesystem unavailable")
-
-    monkeypatch.setattr(Path, "replace", fail_after_backup)
-    with pytest.raises(RuntimeError, match="Recover previous files"):
-        publish_outputs([(source, destination)])
-    backups = list(tmp_path.glob(".simple-tts-backup-*"))
-    assert len(backups) == 1
-    assert (backups[0] / "0").read_text() == "old"
-
-
-@pytest.mark.parametrize("collision", ["master", "vtt", "chapter-file", "input"])
-def test_output_collisions_precede_synthesis(conversion, monkeypatch, collision):
-    """Output paths cannot replace the input or use incompatible file types."""
+def test_output_directory_collision_precedes_synthesis(conversion, monkeypatch):
+    """Output paths cannot use an existing directory."""
     from unittest.mock import Mock
 
     cli, source = conversion
     output = source.with_suffix(".m4a")
-    if collision == "master":
-        output.mkdir()
-    elif collision == "vtt":
-        output.with_suffix(".vtt").mkdir()
-    elif collision == "chapter-file":
-        (source.parent / "book_chapters").touch()
-    else:
-        directory = source.parent / "book_chapters"
-        directory.mkdir()
-        source = source.replace(directory / source.name)
+    output.mkdir()
     load = Mock()
     monkeypatch.setattr(cli, "load_tts", load)
     result = runner.invoke(app, ["convert", str(source), "-o", str(output), "-y"])
@@ -706,3 +463,77 @@ def test_confirmation_lists_each_narrator(conversion, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "af_bella (American female voice)" in result.output
     assert "am_adam (American male voice)" in result.output
+
+
+@pytest.mark.parametrize(
+    "arguments", [["--format", "ogg"], ["--format", "vorbis"], ["-o", "book.ogg"]]
+)
+def test_vorbis_is_rejected_before_extraction(conversion, monkeypatch, arguments):
+    """Removed formats fail before extraction or model loading."""
+    from unittest.mock import Mock
+
+    cli, source = conversion
+    extract = Mock()
+    monkeypatch.setattr(cli, "extract_sections", extract)
+    result = runner.invoke(app, ["convert", str(source), "-y", *arguments])
+    assert result.exit_code == 1
+    assert "Unsupported" in result.output
+    extract.assert_not_called()
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_install_deps_exit_status(monkeypatch, success):
+    """The installer command returns the installation result as its exit status."""
+    from unittest.mock import Mock
+
+    from simple_tts import cli
+
+    install = Mock(return_value=success)
+    monkeypatch.setattr(cli, "install_dependencies_brew", install)
+    result = runner.invoke(app, ["install-deps", "--brew"])
+    assert result.exit_code == (0 if success else 1)
+    install.assert_called_once_with(cli.console)
+
+
+def test_install_deps_shows_manual_commands():
+    """The installer provides commands when no installer option is selected."""
+    result = runner.invoke(app, ["install-deps"])
+    assert result.exit_code == 0
+    assert "brew install poppler pandoc ffmpeg" in result.output
+    assert "sudo apt install poppler-utils pandoc ffmpeg" in result.output
+
+
+def test_empty_input_stops_before_model_loading(conversion, monkeypatch):
+    """An empty document reports a useful error without loading a model."""
+    from unittest.mock import Mock
+
+    cli, source = conversion
+    source.write_text("")
+    load = Mock()
+    monkeypatch.setattr(cli, "load_tts", load)
+    result = runner.invoke(app, ["convert", str(source), "-y"])
+    assert result.exit_code == 1
+    assert "no narration text" in result.output
+    load.assert_not_called()
+
+
+def test_missing_output_directory_stops_before_extraction(conversion, monkeypatch):
+    """Invalid output directories fail before document extraction."""
+    from unittest.mock import Mock
+
+    cli, source = conversion
+    extract = Mock()
+    monkeypatch.setattr(cli, "extract_sections", extract)
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            str(source),
+            "-o",
+            str(source.parent / "absent" / "book.m4b"),
+            "-y",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "Output directory does not exist" in result.output
+    extract.assert_not_called()

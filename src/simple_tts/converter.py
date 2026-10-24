@@ -9,13 +9,11 @@ Examples:
     'Hello World'
 """
 
-import json
-import shutil
+import html
+import re
 import subprocess
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 PANDOC_EXTENSIONS = {".epub", ".docx", ".md", ".qmd", ".rmd", ".txt", ".rst", ".html"}
 
@@ -36,11 +34,10 @@ class ExtractedDocument:
     matched_headings: int
 
 
-def _pandoc(args: list[str], content: str | None = None) -> str:
+def _pandoc(args: list[str]) -> str:
     try:
         return subprocess.run(
             ["pandoc", *args],
-            input=content,
             capture_output=True,
             text=True,
             check=True,
@@ -52,10 +49,10 @@ def _pandoc(args: list[str], content: str | None = None) -> str:
 
 
 def extract_sections(file_path: Path, chapter_level: int = 1) -> ExtractedDocument:
-    """Extract chapters at exactly the selected Pandoc heading level.
+    """Convert once to Markdown, then split at the selected heading level.
 
-    Render each section after reading the Header nodes. Keep other headings in
-    the narration. Prefer optional pdf2md headings for PDF input.
+    PDFs form a single section. Pandoc normalizes other input formats to
+    ATX headings and indented code blocks before section extraction.
     """
     if not 1 <= chapter_level <= 6:
         raise ValueError("Chapter level must be from 1 through 6.")
@@ -63,77 +60,50 @@ def extract_sections(file_path: Path, chapter_level: int = 1) -> ExtractedDocume
         raise FileNotFoundError(f"File not found: {file_path}")
     extension = file_path.suffix.lower()
     if extension == ".pdf":
-        markdown = _pdf_markdown(file_path)
-        if markdown is None:
-            text = normalize_text(extract_text_from_pdf(file_path))
-            return ExtractedDocument([Section(file_path.stem, text)], 0)
-        document = json.loads(_pandoc(["-f", "markdown", "-t", "json"], markdown))
-    elif extension not in PANDOC_EXTENSIONS:
+        text = normalize_text(extract_text_from_pdf(file_path))
+        return ExtractedDocument([Section(file_path.stem, text)], 0)
+    if extension not in PANDOC_EXTENSIONS:
         raise ValueError(f"Unsupported file format: {extension}")
-    else:
-        args = [str(file_path), "-t", "json"]
-        if extension in {".md", ".qmd", ".rmd", ".txt"}:
-            args.extend(["-f", "markdown"])
-        document = json.loads(_pandoc(args))
 
-    def render(blocks: list[dict[str, Any]]) -> str:
-        section = {**document, "meta": {}, "blocks": blocks}
-        return normalize_text(
-            _pandoc(["-f", "json", "-t", "plain", "--wrap=none"], json.dumps(section))
-        )
+    args = [
+        str(file_path),
+        "-t",
+        "markdown_strict-raw_html",
+        "--wrap=none",
+        "--markdown-headings=atx",
+    ]
+    if extension in {".md", ".qmd", ".rmd", ".txt"}:
+        args.extend(["-f", "markdown"])
+    markdown = _pandoc(args)
 
-    def unwrap_divs(blocks: list[dict[str, Any]]):
-        # HTML and DOCX can wrap headings in Div nodes.
-        for block in blocks:
-            if block["t"] == "Div":
-                yield from unwrap_divs(block["c"][1])
-            else:
-                yield block
+    def narration(text: str) -> str:
+        # Keep link labels and inline text without Markdown delimiters.
+        text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)
+        text = re.sub(r"`+([^`]+)`+", r"\1", text)
+        text = re.sub(r"(?<![\w\\])([*_]{1,3})(\S(?:.*?\S)?)\1(?!\w)", r"\2", text)
+        text = re.sub(r"\\([!\"#$%&'()*+,./:;<=>?@\[\\\]^{|}~_-])", r"\1", text)
+        return normalize_text(html.unescape(text))
 
     sections = []
     pending = []
     title = "Introduction"
     matches = 0
-    for block in unwrap_divs(document["blocks"]):
-        if block["t"] == "Header" and block["c"][0] == chapter_level:
-            text = render(pending) if pending else ""
-            if text:
-                sections.append(Section(title, text))
-            pending = []
-            title = render([{"t": "Plain", "c": block["c"][2]}])
-            matches += 1
-        pending.append(block)
-
-    text = render(pending) if pending else ""
-    if matches:
-        if text:
-            sections.append(Section(title, text))
-    else:
-        sections = [Section(file_path.stem, text)]
+    for line in markdown.splitlines():
+        heading = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if heading:
+            line = heading[2]
+            if len(heading[1]) == chapter_level:
+                text = narration("\n".join(pending))
+                if text:
+                    sections.append(Section(title, text))
+                pending = []
+                title = narration(line)
+                matches += 1
+        pending.append(line)
+    text = narration("\n".join(pending))
+    if text:
+        sections.append(Section(title if matches else file_path.stem, text))
     return ExtractedDocument(sections, matches)
-
-
-def _pdf_markdown(file_path: Path) -> str | None:
-    command = shutil.which("pdf2md")
-    if command is None:
-        return None
-    try:
-        result = subprocess.run(
-            [command, str(file_path.resolve()), "--raw"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        if not result.stdout.strip():
-            raise ValueError("pdf2md returned no Markdown.")
-        return result.stdout
-    except (OSError, subprocess.CalledProcessError, ValueError) as error:
-        warnings.warn(
-            f"pdf2md failed: {error}. Use pdftotext without PDF headings.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return None
 
 
 def extract_text_from_pdf(file_path: Path) -> str:

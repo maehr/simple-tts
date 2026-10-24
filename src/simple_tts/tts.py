@@ -3,7 +3,6 @@
 import os
 import warnings
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
 from typing import Any, Protocol
 
 import numpy as np
@@ -44,29 +43,12 @@ def _create_pipeline(voice: str, device: str) -> SpeechPipeline:
         )
 
 
-@dataclass
-class TTSPipeline:
-    """A Kokoro pipeline with device state for one conversion."""
-
-    pipeline: SpeechPipeline | None
-    voice: str
-    requested_device: str
-    device: str
-    report: Callable[[str], None]
-
-    def __call__(self, text: str, *, voice: str, speed: float):
-        """Keep the Kokoro callable interface available to callers."""
-        if self.pipeline is None:
-            raise RuntimeError("The TTS model is not loaded.")
-        return self.pipeline(text, voice=voice, speed=speed)
-
-
 def load_tts(
     voice: str = "af_bella",
     device: str = "auto",
     *,
     report: Callable[[str], None] = print,
-) -> TTSPipeline:
+) -> SpeechPipeline:
     """Load Kokoro on CUDA, MPS, or CPU and report the selected device.
 
     Auto mode retries GPU initialization on CPU once. Explicit GPU requests
@@ -117,12 +99,18 @@ def load_tts(
         report("MPS operations can fall back to CPU when unsupported.")
     elif device == "auto" and not available["cuda"] and not available["mps"]:
         report("No GPU is available. Use CPU.")
-    return TTSPipeline(pipeline, voice, device, selected, report)
+    return pipeline
 
 
-def _synthesize(
-    pipeline: SpeechPipeline, text: str, voice: str, speed: float
+def synthesize(
+    pipeline: SpeechPipeline | None,
+    text: str,
+    voice: str = "af_bella",
+    speed: float = 1.1,
 ) -> np.ndarray:
+    """Complete a chunk before returning audio."""
+    if pipeline is None:
+        raise RuntimeError("No Kokoro model is loaded. Run: pip install -U simple-tts")
     segments = []
     for _, _, audio in pipeline(text, voice=voice, speed=speed):
         if audio is None:
@@ -133,40 +121,6 @@ def _synthesize(
     if segments:
         return np.concatenate(segments).astype(np.float32, copy=False)
     return np.array([], dtype=np.float32)
-
-
-def synthesize(
-    pipeline: SpeechPipeline | None,
-    text: str,
-    voice: str = "af_bella",
-    speed: float = 1.1,
-) -> np.ndarray:
-    """Complete a chunk before returning audio, with one auto-mode CPU retry.
-
-    A failed GPU chunk contributes no samples. After a CPU retry, subsequent
-    chunks use CPU. Array storage stays bounded by the input chunk size.
-    """
-    if pipeline is None:
-        raise RuntimeError("No Kokoro model is loaded. Run: pip install -U simple-tts")
-    try:
-        return _synthesize(pipeline, text, voice, speed)
-    except Exception as e:
-        if not isinstance(pipeline, TTSPipeline):
-            raise
-        if pipeline.requested_device != "auto" or pipeline.device == "cpu":
-            raise RuntimeError(f"Synthesis failed on {pipeline.device}: {e}") from e
-        pipeline.report(
-            f"Device {pipeline.device} synthesis failed: {e}. Retry this chunk on CPU."
-        )
-    # Leave the exception scope first so its traceback releases partial audio.
-    pipeline.pipeline = None
-    pipeline.device = "cpu"
-    try:
-        pipeline.pipeline = _create_pipeline(pipeline.voice, "cpu")
-        pipeline.report("Device: cpu")
-        return _synthesize(pipeline, text, voice, speed)
-    except Exception as e:
-        raise RuntimeError(f"CPU retry failed: {e}") from e
 
 
 def synthesize_chunks(

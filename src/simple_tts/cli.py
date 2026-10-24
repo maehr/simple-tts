@@ -8,7 +8,6 @@ Example:
     $ simple-tts check-deps
 """
 
-import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -33,8 +32,6 @@ from simple_tts.audio import (
     Chapter,
     PCMWriter,
     encode_pcm,
-    export_chapters,
-    write_vtt,
 )
 from simple_tts.converter import extract_sections, split_into_chunks
 from simple_tts.dependencies import (
@@ -76,38 +73,6 @@ def format_duration(seconds: float) -> str:
     parts.append(f"{secs}s")
 
     return " ".join(parts)
-
-
-def format_timestamp(seconds: float) -> str:
-    """Format seconds to WebVTT timestamp (hh:mm:ss.mmm)."""
-    ms_total = int(round(seconds * 1000))
-    hours, rem = divmod(ms_total, 3_600_000)
-    minutes, rem = divmod(rem, 60_000)
-    secs, milliseconds = divmod(rem, 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{milliseconds:03d}"
-
-
-def build_vtt(chunks: list[str], durations: list[float]) -> str:
-    """Build a WebVTT string from text chunks and durations."""
-    if len(chunks) != len(durations):
-        raise ValueError("Chunks and durations must have the same length.")
-
-    lines = ["WEBVTT", ""]
-    current_time = 0.0
-
-    for i, (chunk, duration) in enumerate(zip(chunks, durations)):
-        start = current_time
-        end = current_time + max(duration, 0.0)
-        text = " ".join(chunk.split()) or "(silence)"
-
-        lines.append(str(i + 1))
-        lines.append(f"{format_timestamp(start)} --> {format_timestamp(end)}")
-        lines.append(text)
-        lines.append("")
-
-        current_time = end
-
-    return "\n".join(lines).strip() + "\n"
 
 
 def display_checkpoint(
@@ -190,37 +155,6 @@ def parse_voices(value: str) -> list[str]:
     return voices
 
 
-def publish_outputs(outputs: list[tuple[Path, Path]]) -> None:
-    """Publish staged outputs and restore previous outputs after a failure."""
-    backup_directory = Path(
-        tempfile.mkdtemp(prefix=".simple-tts-backup-", dir=outputs[0][1].parent)
-    )
-    backups = []
-    published = []
-    try:
-        for index, (source, destination) in enumerate(outputs):
-            if destination.exists() or destination.is_symlink():
-                backup = backup_directory / str(index)
-                destination.replace(backup)
-                backups.append((backup, destination))
-            source.replace(destination)
-            published.append((source, destination))
-    except BaseException:
-        try:
-            for source, destination in reversed(published):
-                destination.replace(source)
-            for backup, destination in reversed(backups):
-                backup.replace(destination)
-        except BaseException as error:
-            raise RuntimeError(
-                f"Could not restore outputs. Recover previous files from "
-                f"{backup_directory}."
-            ) from error
-        shutil.rmtree(backup_directory)
-        raise
-    shutil.rmtree(backup_directory)
-
-
 @app.command()
 def convert(
     input_file: Annotated[
@@ -255,7 +189,7 @@ def convert(
         typer.Option(
             "--format",
             "-f",
-            help="Audio format: m4a, m4b, mp4, mp3, wav, ogg, or opus. Default: m4a.",
+            help="Audio format: m4a, m4b, mp4, mp3, wav, or opus. Default: m4a.",
             show_default=False,
         ),
     ] = None,
@@ -277,7 +211,7 @@ def convert(
         typer.Option("--yes", "-y", help="Skip the confirmation prompt."),
     ] = False,
 ) -> None:
-    """Write master audio, chapter audio, and VTT navigation files."""
+    """Convert a document to speech with optional chapters and voice rotation."""
     total_start = time.time()
     try:
         output, format_type = resolve_output(input_file, output, format_type)
@@ -287,19 +221,10 @@ def convert(
         voice = ",".join(selected_voices)
         if not output.parent.is_dir():
             raise ValueError(f"Output directory does not exist: {output.parent}")
-        chapter_directory = output.with_name(f"{output.stem}_chapters")
-        if input_file.resolve() in {
-            output.resolve(),
-            output.with_suffix(".vtt").resolve(),
-        }:
-            raise ValueError("The output paths must differ from the input path.")
-        if input_file.resolve().is_relative_to(chapter_directory.resolve()):
-            raise ValueError("The input must be outside the generated chapter folder.")
-        for path in (output, output.with_suffix(".vtt")):
-            if path.is_dir():
-                raise ValueError(f"An output file path is a directory: {path}")
-        if chapter_directory.exists() and not chapter_directory.is_dir():
-            raise ValueError(f"The chapter folder path is a file: {chapter_directory}")
+        if input_file.resolve() == output.resolve():
+            raise ValueError("The output path must differ from the input path.")
+        if output.is_dir():
+            raise ValueError(f"An output file path is a directory: {output}")
     except ValueError as e:
         console.print(f"[bold red]Error:[/] {e}")
         raise typer.Exit(1) from e
@@ -345,9 +270,6 @@ def convert(
 
         with (
             tempfile.TemporaryDirectory(prefix="simple-tts-") as scratch,
-            tempfile.TemporaryDirectory(
-                prefix=".simple-tts-", dir=output.parent
-            ) as staging,
             Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
@@ -388,20 +310,14 @@ def convert(
                 raise ValueError("Synthesis produced no audio.")
 
             task = progress.add_task("Encode audio...", total=None)
-            staged_audio = Path(staging) / output.name
-            encode_pcm(pcm_path, staged_audio, format_type, chapters)
-            staged_vtt = Path(staging) / "chapters.vtt"
-            write_vtt(chapters, staged_vtt)
-            staged_chapters = Path(staging) / "tracks"
-            export_chapters(pcm_path, staged_chapters, format_type, chapters)
+            with tempfile.TemporaryDirectory(
+                prefix=".simple-tts-", dir=output.parent
+            ) as encoded:
+                temp_output = Path(encoded) / output.name
+                encode_pcm(pcm_path, temp_output, format_type, chapters)
+                temp_output.replace(output)
+
             progress.update(task, completed=1, total=1)
-            publish_outputs(
-                [
-                    (staged_audio, output),
-                    (staged_vtt, output.with_suffix(".vtt")),
-                    (staged_chapters, chapter_directory),
-                ]
-            )
     except KeyboardInterrupt:
         console.print("[yellow]Cancelled.[/yellow]")
         raise typer.Exit(130) from None
@@ -415,8 +331,6 @@ def convert(
     summary.add_column("Metric", style="cyan")
     summary.add_column("Value", style="green")
     summary.add_row("Output File", str(output))
-    summary.add_row("Chapter VTT", str(output.with_suffix(".vtt")))
-    summary.add_row("Chapter Folder", str(chapter_directory))
     summary.add_row("Chapters", str(len(chapters)))
     summary.add_row("Audio Duration", format_duration(duration))
     summary.add_row("Processing Time", format_duration(total_time))
