@@ -1,7 +1,7 @@
 """Document conversion utilities for extracting text from various formats.
 
-This module provides functions to extract plain text from PDF, DOCX, EPUB,
-Markdown, and other document formats using system tools (pdftotext, pandoc).
+This module provides functions to extract plain text from PDF, DOCX, EPUB, Markdown,
+and other document formats using system tools (pdftotext, pandoc).
 
 Examples:
     >>> from simple_tts.converter import normalize_text
@@ -9,8 +9,101 @@ Examples:
     'Hello World'
 """
 
+import html
+import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
+
+PANDOC_EXTENSIONS = {".epub", ".docx", ".md", ".qmd", ".rmd", ".txt", ".rst", ".html"}
+
+
+@dataclass(frozen=True)
+class Section:
+    """A chapter title and its narration, including the heading once."""
+
+    title: str
+    text: str
+
+
+@dataclass(frozen=True)
+class ExtractedDocument:
+    """Narration sections and the number of matching headings."""
+
+    sections: list[Section]
+    matched_headings: int
+
+
+def _pandoc(args: list[str]) -> str:
+    try:
+        return subprocess.run(
+            ["pandoc", *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to convert document: {e.stderr}") from e
+    except FileNotFoundError as e:
+        raise RuntimeError("pandoc not found. Install pandoc.") from e
+
+
+def extract_sections(file_path: Path, chapter_level: int = 1) -> ExtractedDocument:
+    """Convert once to Markdown, then split at the selected heading level.
+
+    PDFs form a single section. Pandoc normalizes other input formats to
+    ATX headings and indented code blocks before section extraction.
+    """
+    if not 1 <= chapter_level <= 6:
+        raise ValueError("Chapter level must be from 1 through 6.")
+    if not file_path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    extension = file_path.suffix.lower()
+    if extension == ".pdf":
+        text = normalize_text(extract_text_from_pdf(file_path))
+        return ExtractedDocument([Section(file_path.stem, text)], 0)
+    if extension not in PANDOC_EXTENSIONS:
+        raise ValueError(f"Unsupported file format: {extension}")
+
+    args = [
+        str(file_path),
+        "-t",
+        "markdown_strict-raw_html",
+        "--wrap=none",
+        "--markdown-headings=atx",
+    ]
+    if extension in {".md", ".qmd", ".rmd", ".txt"}:
+        args.extend(["-f", "markdown"])
+    markdown = _pandoc(args)
+
+    def narration(text: str) -> str:
+        # Keep link labels and inline text without Markdown delimiters.
+        text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)
+        text = re.sub(r"`+([^`]+)`+", r"\1", text)
+        text = re.sub(r"(?<![\w\\])([*_]{1,3})(\S(?:.*?\S)?)\1(?!\w)", r"\2", text)
+        text = re.sub(r"\\([!\"#$%&'()*+,./:;<=>?@\[\\\]^{|}~_-])", r"\1", text)
+        return normalize_text(html.unescape(text))
+
+    sections = []
+    pending = []
+    title = "Introduction"
+    matches = 0
+    for line in markdown.splitlines():
+        heading = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if heading:
+            line = heading[2]
+            if len(heading[1]) == chapter_level:
+                text = narration("\n".join(pending))
+                if text:
+                    sections.append(Section(title, text))
+                pending = []
+                title = narration(line)
+                matches += 1
+        pending.append(line)
+    text = narration("\n".join(pending))
+    if text:
+        sections.append(Section(title if matches else file_path.stem, text))
+    return ExtractedDocument(sections, matches)
 
 
 def extract_text_from_pdf(file_path: Path) -> str:
@@ -120,16 +213,7 @@ def extract_text(file_path: Path) -> str:
 
     if extension == ".pdf":
         return extract_text_from_pdf(file_path)
-    elif extension in {
-        ".docx",
-        ".epub",
-        ".md",
-        ".qmd",
-        ".rmd",
-        ".txt",
-        ".rst",
-        ".html",
-    }:
+    elif extension in PANDOC_EXTENSIONS:
         return extract_text_from_document(file_path)
     else:
         raise ValueError(f"Unsupported file format: {extension}")

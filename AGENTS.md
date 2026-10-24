@@ -15,7 +15,7 @@
 - Lint & format: `uv run ruff check src tests` and `uv run ruff format src tests`.
 - Run tests with coverage & doctests: `uv run pytest` (pyproject adds `--cov` and `--doctest-modules`).
 - Type checking: `uv run ty check src`.
-- Manual CLI smoke test: `uv run simple-tts convert README.md -y` (writes `README.m4a` and `README.vtt` in-place).
+- Smoke test: `uv run simple-tts convert README.md -y` writes one audio file.
 
 ## Coding Style & Naming Conventions
 

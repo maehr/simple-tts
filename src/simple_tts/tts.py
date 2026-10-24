@@ -1,42 +1,31 @@
-"""Text-to-Speech synthesis using Kokoro TTS.
+"""Text-to-speech synthesis with explicit device selection and CPU retry."""
 
-This module provides functional TTS synthesis using the Kokoro library.
-
-Example:
-    >>> from simple_tts.tts import load_tts, synthesize
-    >>> pipeline = load_tts("af_bella")
-    >>> audio = synthesize(pipeline, "Hello world", voice="af_bella")
-"""
-
+import os
 import warnings
+from collections.abc import Callable, Iterable
+from typing import Any, Protocol
 
 import numpy as np
 
-# Default sample rate for Kokoro TTS
+# PyTorch reads this setting at import time. Keep both heavy imports lazy.
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
 SAMPLE_RATE = 24000
+DEVICES = {"auto", "cuda", "mps", "cpu"}
 
 
-def load_tts(voice: str = "af_bella") -> object | None:
-    """Load the Kokoro TTS pipeline.
+class SpeechPipeline(Protocol):
+    """The callable interface of a Kokoro pipeline."""
 
-    Args:
-        voice: Voice ID to determine language code.
+    def __call__(self, text: str, *, voice: str, speed: float) -> Iterable[Any]:
+        """Yield graphemes, phonemes, and audio segments."""
+        ...
 
-    Returns:
-        Kokoro KPipeline object, or None if not installed.
 
-    Example:
-        >>> pipeline = load_tts("af_bella")
-        >>> pipeline is not None or True  # May not be installed
-        True
-    """
-    try:
-        from kokoro import KPipeline
+def _create_pipeline(voice: str, device: str) -> SpeechPipeline:
+    from kokoro import KPipeline
 
-        # Extract language code from voice (first character)
-        lang_code = voice[0] if voice else "a"
-
-        # Suppress known warnings during model load
+    with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
             message="dropout option adds dropout after all but last recurrent layer",
@@ -47,75 +36,98 @@ def load_tts(voice: str = "af_bella") -> object | None:
             message="`torch.nn.utils.weight_norm` is deprecated",
             category=FutureWarning,
         )
-
-        return KPipeline(lang_code=lang_code, repo_id="hexgrad/Kokoro-82M")
-    except ImportError:
-        warnings.warn(
-            "Kokoro TTS not installed. Install with: pip install kokoro>=0.8.4",
-            UserWarning,
-            stacklevel=2,
+        return KPipeline(
+            lang_code=voice[0] if voice else "a",
+            repo_id="hexgrad/Kokoro-82M",
+            device=device,
         )
-        return None
+
+
+def load_tts(
+    voice: str = "af_bella",
+    device: str = "auto",
+    *,
+    report: Callable[[str], None] = print,
+) -> SpeechPipeline:
+    """Load Kokoro on CUDA, MPS, or CPU and report the selected device.
+
+    Auto mode retries GPU initialization on CPU once. Explicit GPU requests
+    fail if the device is unavailable or initialization fails.
+    """
+    if device not in DEVICES:
+        raise ValueError("Device must be auto, cuda, mps, or cpu.")
+    # Also set it here for callers that change their environment after import.
+    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+    try:
+        import torch
+    except ImportError as e:
+        raise RuntimeError("PyTorch is missing. Run: pip install -U simple-tts") from e
+
+    available = {
+        "cuda": torch.cuda.is_available(),
+        "mps": torch.backends.mps.is_available(),
+        "cpu": True,
+    }
+    selected = device
+    if device == "auto":
+        selected = next(name for name, ready in available.items() if ready)
+    elif not available[device]:
+        raise RuntimeError(
+            f"Requested device '{device}' is unavailable. Use --device auto or cpu."
+        )
+    try:
+        pipeline = _create_pipeline(voice, selected)
+    except ImportError as e:
+        raise RuntimeError(
+            "Kokoro or a required package is missing. Run: pip install -U simple-tts "
+            "(requires kokoro>=0.9.4)."
+        ) from e
+    except Exception as e:
+        if device != "auto" or selected == "cpu":
+            raise RuntimeError(f"Failed to initialize TTS on {selected}: {e}") from e
+        report(f"Device {selected} initialization failed: {e}. Retry on CPU.")
+        selected = "cpu"
+        try:
+            pipeline = _create_pipeline(voice, selected)
+        except Exception as cpu_error:
+            raise RuntimeError(
+                f"Failed to initialize TTS on CPU: {cpu_error}"
+            ) from cpu_error
+
+    report(f"Device: {selected}")
+    if selected == "mps":
+        report("MPS operations can fall back to CPU when unsupported.")
+    elif device == "auto" and not available["cuda"] and not available["mps"]:
+        report("No GPU is available. Use CPU.")
+    return pipeline
 
 
 def synthesize(
-    pipeline: object | None,
+    pipeline: SpeechPipeline | None,
     text: str,
     voice: str = "af_bella",
     speed: float = 1.1,
 ) -> np.ndarray:
-    """Synthesize speech from text.
-
-    Args:
-        pipeline: Kokoro pipeline from load_tts().
-        text: Text to synthesize.
-        voice: Voice ID to use.
-        speed: Playback speed multiplier.
-
-    Returns:
-        Audio data as numpy float32 array.
-
-    Example:
-        >>> pipeline = load_tts("af_bella")
-        >>> audio = synthesize(pipeline, "Hello", voice="af_bella")
-        >>> isinstance(audio, np.ndarray)
-        True
-    """
+    """Complete a chunk before returning audio."""
     if pipeline is None:
-        # Fallback: return silence (for testing without kokoro)
-        duration = len(text) * 0.05
-        return np.zeros(int(SAMPLE_RATE * duration), dtype=np.float32)
-
+        raise RuntimeError("No Kokoro model is loaded. Run: pip install -U simple-tts")
     segments = []
     for _, _, audio in pipeline(text, voice=voice, speed=speed):
-        segments.append(audio)
-
+        if audio is None:
+            continue
+        if hasattr(audio, "detach"):
+            audio = audio.detach().cpu().numpy()
+        segments.append(np.asarray(audio, dtype=np.float32))
     if segments:
-        return np.concatenate(segments).astype(np.float32)
+        return np.concatenate(segments).astype(np.float32, copy=False)
     return np.array([], dtype=np.float32)
 
 
 def synthesize_chunks(
-    pipeline: object | None,
+    pipeline: SpeechPipeline | None,
     chunks: list[str],
     voice: str = "af_bella",
     speed: float = 1.1,
 ) -> list[np.ndarray]:
-    """Synthesize multiple text chunks.
-
-    Args:
-        pipeline: Kokoro pipeline from load_tts().
-        chunks: List of text chunks.
-        voice: Voice ID to use.
-        speed: Playback speed multiplier.
-
-    Returns:
-        List of audio arrays.
-
-    Example:
-        >>> pipeline = load_tts("af_bella")
-        >>> audios = synthesize_chunks(pipeline, ["Hello", "World"])
-        >>> len(audios)
-        2
-    """
+    """Return audio arrays for library callers that need all chunks in memory."""
     return [synthesize(pipeline, chunk, voice=voice, speed=speed) for chunk in chunks]

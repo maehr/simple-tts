@@ -1,35 +1,36 @@
 # simple-tts
 
-A simple CLI for converting documents to speech using [Kokoro TTS](https://github.com/hexgrad/kokoro).
+Convert documents to speech with [Kokoro TTS](https://github.com/hexgrad/kokoro).
 
 ## Features
 
-- **Multi-format support**: PDF, DOCX, EPUB, Markdown, TXT, HTML, and more
-- **50+ voices**: American/British English, Spanish, French, Italian, Japanese, Korean, Chinese, Portuguese, Hindi
-- **Multiple output formats**: M4A, MP3, WAV, OGG
-- **Captions by default**: Writes a WebVTT sidecar for easy navigation (use `--no-vtt` to skip)
-- **Adjustable speed**: 0.5x to 2.0x playback speed
-- **Progress tracking**: Real-time progress with time estimates
+- Read PDF, DOCX, EPUB, Markdown, QMD, RMD, TXT, RST, and HTML files.
+- Select narrator voices and a speech speed from 0.5 to 2.0.
+- Write M4A, M4B, MP4, MP3, WAV, or Opus audio.
+- Add embedded chapters to M4B and MP4 files.
+- Rotate narrator voices across chapters.
+- Use an available GPU with CPU fallback during initialization.
+- Keep audio memory use bounded by the text chunk size.
 
 ## Installation
 
-### System Dependencies
+Install the system tools for your platform.
 
 ```bash
 # macOS
 brew install poppler pandoc ffmpeg
 
-# Ubuntu/Debian
+# Ubuntu or Debian
 sudo apt install poppler-utils pandoc ffmpeg
 ```
 
-### Install Package
+Install the package with Python 3.12 or later.
 
 ```bash
 pip install simple-tts
 ```
 
-Or from source:
+To install from source, use these commands.
 
 ```bash
 git clone https://github.com/maehr/simple-tts
@@ -37,155 +38,169 @@ cd simple-tts
 pip install -e .
 ```
 
+The project uses Python 3.12 for development.
+The first conversion downloads the Kokoro model and language resources.
+The FFmpeg build must include the encoder for the selected format.
+
 ## Usage
 
-### Convert a Document
+### Convert a document
+
+M4A is the default format.
+The default voice is `af_bella`.
 
 ```bash
-# Basic usage with default voice (af_bella)
 simple-tts convert document.pdf
-
-# Specify voice and output file
-simple-tts convert document.pdf --voice bf_emma --output audio.mp3
-
-# Faster speed, skip confirmation
-simple-tts convert essay.md -v am_adam -s 1.3 -y
-
-# Convert the bundled EPUB sample
-simple-tts convert tests/minimal.epub -y
-
-# Skip captions if you don't need them
-simple-tts convert document.pdf --no-vtt
 ```
 
-### Example Output
-
-```
-$ simple-tts convert README.md --voice af_bella -y
-
-📄 Input: /path/to/README.md
-🔊 Output: /path/to/README.m4a
-🗣️ Voice: af_bella
-⠋ Extracting text...     ━━━━━━━━━━━━━━━━ 100% 0:00:00 • -:--:--
-  └─ 2,847 chars in 0s
-⠋ Preparing text...      ━━━━━━━━━━━━━━━━ 100% 0:00:00 • -:--:--
-  └─ 3 chunks in 0s
-⠋ Loading TTS model...   ━━━━━━━━━━━━━━━━ 100% 0:00:02 • -:--:--
-  └─ Model loaded in 2s
-⠋ Synthesizing (3/3)...  ━━━━━━━━━━━━━━━━ 100% 0:00:15 • -:--:--
-  └─ 3 chunks in 15s
-⠋ Saving audio...        ━━━━━━━━━━━━━━━━ 100% 0:00:00 • -:--:--
-  └─ Saved in 0s
-
-           Summary
-┌──────────────────┬──────────────┐
-│ Output File      │ README.m4a   │
-│ Audio Duration   │ 2m 34s       │
-│ Processing Time  │ 18s          │
-│ Speed Ratio      │ 8.6x realtime│
-└──────────────────┴──────────────┘
-
-✅ Done!
-```
-
-### List Available Voices
+An explicit output suffix selects the format.
 
 ```bash
-simple-tts voices
+simple-tts convert document.pdf --voice bf_emma --output audio.mp3
 ```
 
-Output:
+Set the speed with `--speed`.
+Use `--yes` to skip the confirmation prompt.
 
-```
-                Available Voices
-┌────────────────┬─────────────────┬──────────────────────────┐
-│ Voice ID       │ Language        │ Description              │
-├────────────────┼─────────────────┼──────────────────────────┤
-│ af_bella       │ English (US)    │ American female voice    │
-│ af_nicole      │ English (US)    │ American female voice    │
-│ am_adam        │ English (US)    │ American male voice      │
-│ bf_emma        │ English (UK)    │ British female voice     │
-│ bm_george      │ English (UK)    │ British male voice       │
-│ ef_dora        │ Spanish         │ Spanish female voice     │
-│ ff_siwis       │ French          │ French female voice      │
-│ if_sara        │ Italian         │ Italian female voice     │
-│ jf_alpha       │ Japanese        │ Japanese female voice    │
-│ kf_alpha       │ Korean          │ Korean female voice      │
-│ pf_dora        │ Portuguese (BR) │ Brazilian female voice   │
-│ zf_xiaobei     │ Chinese         │ Chinese female voice     │
-│ ...            │ ...             │ ...                      │
-└────────────────┴─────────────────┴──────────────────────────┘
+```bash
+simple-tts convert essay.md -v am_adam -s 1.3 -y
 ```
 
-### CLI Options
+### Chapters and navigation
+
+Use `--format m4b` or `--format mp4` for AAC audio with embedded chapters.
+M4A, M4B, and MP4 use a default bitrate of 128 kbps.
+
+```bash
+simple-tts convert book.md --format mp4 --chapter-level 2
+```
+
+This writes one file, `book.mp4`, with embedded chapter markers.
+The command does not create separate chapter files or VTT files.
+
+Only headings at the selected level start chapters (default level 1).
+Valid chapter levels range from 1 through 6.
+
+Each heading appears once in the narration, including headings at other levels.
+Text before the first selected heading forms an `Introduction` chapter.
+If no headings match, the chapter uses the input stem as its title.
+PDF extraction uses `pdftotext` and creates one section.
+Other formats use one Pandoc call before chapter extraction.
+
+```bash
+simple-tts convert book.qmd --output book.m4a --chapter-level 2
+simple-tts convert book.rmd --output book.m4b --chapter-level 2
+simple-tts convert tests/minimal.epub --format m4b
+```
+
+### Rotate narrator voices
+
+Separate voice IDs with commas to rotate narrators across chapters.
+
+```bash
+simple-tts convert book.md --voice af_bella,am_adam --format mp4
+```
+
+The first section uses the first voice.
+An introduction counts as a section.
+Each later section uses the next voice, then the rotation repeats.
+Every chunk within a section uses the same voice.
+All voices must share one Kokoro language code, which is the first character of each voice ID.
+For example, `af_bella` and `am_adam` share code `a`.
+The command rejects unknown voices, empty list entries, and mixed language codes before extraction.
+
+### Select a device
+
+The default `--device auto` selects CUDA, then MPS, then CPU.
+The command reports the selected device.
+If GPU initialization fails, auto mode retries on CPU once.
+Synthesis errors stop the conversion.
+Only completed chunks reach the audio file.
+
+Explicit GPU requests fail if the GPU is unavailable or fails.
+
+```bash
+simple-tts convert book.md --device mps
+simple-tts convert book.md --device cuda
+simple-tts convert book.md --device cpu
+```
+
+The application sets `PYTORCH_ENABLE_MPS_FALLBACK=1` before it imports PyTorch or Kokoro.
+This setting permits CPU execution for unsupported MPS operations.
+See the [PyTorch MPS environment variables](https://docs.pytorch.org/docs/stable/mps_environment_variables.html).
+
+### Audio storage
+
+The command writes each completed chunk to a temporary mono float32 PCM file.
+It encodes the audio once after synthesis completes.
+Audio memory use stays within one text chunk.
+It replaces the output file only after encoding succeeds.
+Temporary PCM storage uses approximately 3.5 GB per ten hours of audio.
+
+### CLI options
 
 ```bash
 simple-tts convert --help
 ```
 
+| Option | Purpose | Default |
+| --- | --- | --- |
+| `-v`, `--voice` | Select comma-separated voice IDs for chapter rotation. | `af_bella` |
+| `-o`, `--output` | Set the output path and infer its format. | Beside the input |
+| `-s`, `--speed` | Set the speech speed from 0.5 to 2.0. | `1.1` |
+| `-f`, `--format` | Select `m4a`, `m4b`, `mp4`, `mp3`, `wav`, or `opus`. | `m4a` |
+| `--chapter-level` | Select the heading level from 1 through 6. | `1` |
+| `--device` | Select `auto`, `cuda`, `mps`, or `cpu`. | `auto` |
+| `-y`, `--yes` | Skip the confirmation prompt. | Off |
+
+List the available voices with this command.
+
+```bash
+simple-tts voices
 ```
-Usage: simple-tts convert [OPTIONS] INPUT_FILE
 
-  Convert a document to speech using Kokoro TTS.
-
-Arguments:
-  INPUT_FILE  Input file to convert (PDF, DOCX, EPUB, MD, TXT, etc.)  [required]
-
-Options:
-  -v, --voice TEXT    Voice ID (run 'simple-tts voices' to list)  [default: af_bella]
-  -o, --output PATH   Output file path
-  -s, --speed FLOAT   Playback speed (0.5-2.0)  [default: 1.1]
-  -f, --format TEXT   Output format (m4a, mp3, wav, ogg)  [default: m4a]
-  -y, --yes           Skip confirmation prompt
-  --help              Show this message and exit.
-```
-
-### Check Dependencies
+Check the system tools with this command.
 
 ```bash
 simple-tts check-deps
 ```
 
-```
-System Dependencies Status:
-
-  ✓ pdftotext - PDF text extraction (from Poppler)
-  ✓ pandoc - Universal document converter
-  ✓ ffmpeg - Audio encoding and processing
-```
-
-## Supported Languages
-
-| Language   | Voices                              |
-|------------|-------------------------------------|
-| English US | af_bella, af_nicole, am_adam, etc.  |
-| English UK | bf_emma, bf_isabella, bm_george     |
-| Spanish    | ef_dora, em_alex                    |
-| French     | ff_siwis                            |
-| Italian    | if_sara, im_nicola                  |
-| Japanese   | jf_alpha, jf_gongitsune, jm_kumo    |
-| Korean     | kf_alpha, km_alpha                  |
-| Portuguese | pf_dora, pm_alex                    |
-| Chinese    | zf_xiaobei, zm_yunxi                |
-| Hindi      | hf_alpha, hm_omega                  |
-
 ## Development
 
+Install the locked development dependencies.
+
 ```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-
-# Run linting
-ruff check src tests
-ruff format src tests
-
-# Run tests
-pytest
-
-# Type checking
-ty check src
+uv sync --locked --group dev
 ```
+
+Run the tests and code checks.
+
+```bash
+uv run --locked --group dev pytest
+uv run --locked --group dev ruff check src tests
+uv run --locked --group dev ruff format --check src tests
+uv run --locked --group dev ty check src
+```
+
+Tests use mocked synthesis and real Pandoc, FFmpeg, and ffprobe.
+They do not download the speech model.
+
+## Versioning
+
+The project follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
+Releases before `1.0.0` have an unstable public interface.
+The public interface includes CLI options, output formats, and documented Python helpers.
+
+Before `1.0.0`, the project uses these rules:
+
+- Compatible fixes increase the patch version: `0.2.0` to `0.2.1`.
+- New features or breaking changes increase the minor version: `0.2.0` to `0.3.0`.
+- A minor increase resets the patch version to zero.
+- Breaking changes include a `BREAKING CHANGE:` note in the changelog.
+
+Version `1.0.0` will mark a stable public interface.
+See [CHANGELOG.md](CHANGELOG.md) for changes in each version.
 
 ## License
 
-AGPL-3.0 - See [LICENSE](LICENSE) for details.
+See [LICENSE](LICENSE) for the AGPL-3.0 terms.

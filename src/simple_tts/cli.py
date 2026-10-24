@@ -8,6 +8,7 @@ Example:
     $ simple-tts check-deps
 """
 
+import tempfile
 import time
 from pathlib import Path
 from typing import Annotated, Optional
@@ -26,14 +27,19 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from simple_tts.audio import concatenate_audio, get_audio_duration, save_audio
-from simple_tts.converter import extract_text, normalize_text, split_into_chunks
+from simple_tts.audio import (
+    SUPPORTED_FORMATS,
+    Chapter,
+    PCMWriter,
+    encode_pcm,
+)
+from simple_tts.converter import extract_sections, split_into_chunks
 from simple_tts.dependencies import (
     check_dependencies,
     install_dependencies_brew,
     print_dependency_status,
 )
-from simple_tts.tts import SAMPLE_RATE, load_tts, synthesize
+from simple_tts.tts import DEVICES, SAMPLE_RATE, load_tts, synthesize
 from simple_tts.voices import VOICES, get_voice_info
 
 app = typer.Typer(
@@ -69,38 +75,6 @@ def format_duration(seconds: float) -> str:
     return " ".join(parts)
 
 
-def format_timestamp(seconds: float) -> str:
-    """Format seconds to WebVTT timestamp (hh:mm:ss.mmm)."""
-    ms_total = int(round(seconds * 1000))
-    hours, rem = divmod(ms_total, 3_600_000)
-    minutes, rem = divmod(rem, 60_000)
-    secs, milliseconds = divmod(rem, 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{milliseconds:03d}"
-
-
-def build_vtt(chunks: list[str], durations: list[float]) -> str:
-    """Build a WebVTT string from text chunks and durations."""
-    if len(chunks) != len(durations):
-        raise ValueError("Chunks and durations must have the same length.")
-
-    lines = ["WEBVTT", ""]
-    current_time = 0.0
-
-    for i, (chunk, duration) in enumerate(zip(chunks, durations)):
-        start = current_time
-        end = current_time + max(duration, 0.0)
-        text = " ".join(chunk.split()) or "(silence)"
-
-        lines.append(str(i + 1))
-        lines.append(f"{format_timestamp(start)} --> {format_timestamp(end)}")
-        lines.append(text)
-        lines.append("")
-
-        current_time = end
-
-    return "\n".join(lines).strip() + "\n"
-
-
 def display_checkpoint(
     input_file: Path,
     output: Path,
@@ -111,15 +85,15 @@ def display_checkpoint(
     text_length: int,
 ) -> None:
     """Display checkpoint before TTS inference."""
-    voice_info = get_voice_info(voice)
-
     config_table = Table(title="TTS Configuration", show_header=False)
     config_table.add_column("Parameter", style="cyan")
     config_table.add_column("Value", style="green")
 
     config_table.add_row("Input File", str(input_file))
     config_table.add_row("Output File", str(output))
-    config_table.add_row("Voice", f"{voice} ({voice_info['description']})")
+    for voice_id in voice.split(","):
+        description = get_voice_info(voice_id)["description"]
+        config_table.add_row("Voice", f"{voice_id} ({description})")
     config_table.add_row("Speed", f"{speed}x")
     config_table.add_row("Format", format_type)
     config_table.add_row("Text Length", f"{text_length:,} characters")
@@ -148,12 +122,45 @@ def display_checkpoint(
     console.print()
 
 
+def resolve_output(
+    input_file: Path, output: Path | None, format_type: str | None
+) -> tuple[Path, str]:
+    """Resolve the format before extraction or synthesis starts."""
+    requested = format_type.lower() if format_type is not None else None
+    if requested is not None and requested not in SUPPORTED_FORMATS:
+        raise ValueError(f"Unsupported audio format: {requested}")
+    suffix = output.suffix.lstrip(".").lower() if output is not None else ""
+    if suffix and suffix not in SUPPORTED_FORMATS:
+        raise ValueError(f"Unsupported output suffix: .{suffix}")
+    if requested and suffix and requested != suffix:
+        raise ValueError(
+            f"Format '{requested}' conflicts with output suffix '.{suffix}'."
+        )
+    selected = requested or suffix or "m4a"
+    if output is None:
+        output = input_file.with_suffix(f".{selected}")
+    elif not suffix:
+        output = output.with_suffix(f".{selected}")
+    return output, selected
+
+
+def parse_voices(value: str) -> list[str]:
+    """Validate a rotation that shares one Kokoro language code."""
+    voices = [voice.strip() for voice in value.split(",")]
+    for voice in voices:
+        if voice not in VOICES:
+            raise ValueError(f"Unknown voice '{voice}'. Run 'simple-tts voices'.")
+    if len({voice[0] for voice in voices}) != 1:
+        raise ValueError("All voices must share one Kokoro language code.")
+    return voices
+
+
 @app.command()
 def convert(
     input_file: Annotated[
         Path,
         typer.Argument(
-            help="Input file to convert (PDF, DOCX, EPUB, MD, TXT, etc.)",
+            help="Input file: PDF, DOCX, EPUB, MD, QMD, RMD, TXT, RST, or HTML.",
             exists=True,
             dir_okay=False,
             resolve_path=True,
@@ -164,215 +171,173 @@ def convert(
         typer.Option(
             "--voice",
             "-v",
-            help="Voice ID (run 'simple-tts voices' to list)",
+            help="Voice IDs separated by commas. Rotate once per chapter.",
         ),
     ] = "af_bella",
     output: Annotated[
         Optional[Path],
         typer.Option(
-            "--output",
-            "-o",
-            help="Output file path",
+            "--output", "-o", help="Output path. The suffix selects the format."
         ),
     ] = None,
     speed: Annotated[
         float,
-        typer.Option(
-            "--speed",
-            "-s",
-            help="Playback speed (0.5-2.0)",
-            min=0.5,
-            max=2.0,
-        ),
+        typer.Option("--speed", "-s", help="Speech speed.", min=0.5, max=2.0),
     ] = 1.1,
     format_type: Annotated[
-        str,
+        Optional[str],
         typer.Option(
             "--format",
             "-f",
-            help="Output audio format",
+            help="Audio format: m4a, m4b, mp4, mp3, wav, or opus. Default: m4a.",
+            show_default=False,
         ),
-    ] = "m4a",
+    ] = None,
+    chapter_level: Annotated[
+        int,
+        typer.Option(
+            "--chapter-level",
+            help="Heading level that starts each chapter.",
+            min=1,
+            max=6,
+        ),
+    ] = 1,
+    device: Annotated[
+        str,
+        typer.Option("--device", help="Device: auto, cuda, mps, or cpu."),
+    ] = "auto",
     yes: Annotated[
         bool,
-        typer.Option(
-            "--yes",
-            "-y",
-            help="Skip confirmation prompt",
-        ),
+        typer.Option("--yes", "-y", help="Skip the confirmation prompt."),
     ] = False,
-    vtt: Annotated[
-        bool,
-        typer.Option(
-            "--vtt/--no-vtt",
-            help="Write WebVTT sidecar captions next to the audio file",
-        ),
-    ] = True,
 ) -> None:
-    """Convert a document to speech using Kokoro TTS.
-
-    Example:
-        $ simple-tts convert document.pdf --voice af_bella
-        $ simple-tts convert essay.md -v bf_emma -s 1.2 -o output.mp3
-    """
+    """Convert a document to speech with optional chapters and voice rotation."""
     total_start = time.time()
-    step_times: dict[str, float] = {}
+    try:
+        output, format_type = resolve_output(input_file, output, format_type)
+        if device not in DEVICES:
+            raise ValueError("Device must be auto, cuda, mps, or cpu.")
+        selected_voices = parse_voices(voice)
+        voice = ",".join(selected_voices)
+        if not output.parent.is_dir():
+            raise ValueError(f"Output directory does not exist: {output.parent}")
+        if input_file.resolve() == output.resolve():
+            raise ValueError("The output path must differ from the input path.")
+        if output.is_dir():
+            raise ValueError(f"An output file path is a directory: {output}")
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/] {e}")
+        raise typer.Exit(1) from e
 
-    # Validate voice
-    if voice not in VOICES:
-        console.print(f"[bold red]Error:[/] Unknown voice '{voice}'")
-        console.print("Run 'simple-tts voices' to see available voices.")
-        raise typer.Exit(1)
+    check_dependencies(console)
+    console.print(f"[bold blue]Input:[/] {input_file}")
+    console.print(f"[bold blue]Output:[/] {output}")
+    console.print(f"[bold blue]Voice:[/] {voice}")
 
-    # Check dependencies
-    if not check_dependencies(console):
-        console.print(
-            "\n[bold yellow]⚠️  Missing dependencies may cause errors.[/bold yellow]\n"
-        )
-
-    # Set output path
-    if output is None:
-        output = input_file.with_suffix(f".{format_type}")
-
-    console.print(f"[bold blue]📄 Input:[/] {input_file}")
-    console.print(f"[bold blue]🔊 Output:[/] {output}")
-    console.print(f"[bold blue]🗣️ Voice:[/] {voice}")
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TimeElapsedColumn(),
-        TextColumn("•"),
-        TimeRemainingColumn(),
-        console=console,
-    ) as progress:
-        # Extract text
-        step_start = time.time()
-        task = progress.add_task("Extracting text...", total=100)
-        try:
-            text = extract_text(input_file)
-            text = normalize_text(text)
-        except Exception as e:
-            console.print(f"[bold red]Error:[/] {e}")
-            raise typer.Exit(1) from e
-        progress.update(task, completed=100)
-        step_times["extract"] = time.time() - step_start
-        extract_time = format_duration(step_times["extract"])
-        console.print(f"[dim]  └─ {len(text):,} chars in {extract_time}[/dim]")
-
-        # Split into chunks
-        step_start = time.time()
-        task = progress.add_task("Preparing text...", total=100)
-        chunks = split_into_chunks(text)
-        progress.update(task, completed=100)
-        step_times["split"] = time.time() - step_start
-        split_time = format_duration(step_times["split"])
-        console.print(f"[dim]  └─ {len(chunks)} chunks in {split_time}[/dim]")
-
-    # Show checkpoint and ask for confirmation
-    if not yes:
-        display_checkpoint(
-            input_file=input_file,
-            output=output,
-            voice=voice,
-            speed=speed,
-            format_type=format_type,
-            chunks=chunks,
-            text_length=len(text),
-        )
-        console.print(
-            Panel(
-                "[bold]Ready to synthesize.[/bold]\n"
-                "Press [cyan]Enter[/cyan] to continue or [red]Ctrl+C[/red] to cancel.",
-                title="Checkpoint",
-                border_style="blue",
+    try:
+        document = extract_sections(input_file, chapter_level)
+        if not document.matched_headings:
+            console.print(
+                f"[yellow]Warning: No headings match level {chapter_level}. "
+                f"Use one chapter named '{input_file.stem}'.[/yellow]"
             )
-        )
-        try:
-            input()
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Cancelled.[/yellow]")
-            raise typer.Exit(0) from None
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TimeElapsedColumn(),
-        TextColumn("•"),
-        TimeRemainingColumn(),
-        console=console,
-    ) as progress:
-        # Load TTS model
-        step_start = time.time()
-        task = progress.add_task("Loading TTS model...", total=100)
-        pipeline = load_tts(voice)
-        progress.update(task, completed=100)
-        step_times["load"] = time.time() - step_start
-        console.print(
-            f"[dim]  └─ Model loaded in {format_duration(step_times['load'])}[/dim]"
-        )
-
-        # Synthesize chunks
-        step_start = time.time()
-        task = progress.add_task(
-            f"Synthesizing (0/{len(chunks)})...", total=len(chunks)
-        )
-        audio_chunks = []
-        for i, chunk in enumerate(chunks):
-            audio = synthesize(pipeline, chunk, voice=voice, speed=speed)
-            audio_chunks.append(audio)
-            progress.update(task, advance=1)
-            desc = f"Synthesizing ({i + 1}/{len(chunks)})..."
-            progress.update(task, description=desc)
-
-        step_times["synthesize"] = time.time() - step_start
-        synth_time = format_duration(step_times["synthesize"])
-        console.print(f"[dim]  └─ {len(chunks)} chunks in {synth_time}[/dim]")
-
-        # Save audio
-        step_start = time.time()
-        task = progress.add_task("Saving audio...", total=100)
-        audio_data = concatenate_audio(audio_chunks)
-        save_audio(audio_data, output, sample_rate=SAMPLE_RATE)
-        progress.update(task, completed=100)
-        step_times["save"] = time.time() - step_start
-        console.print(f"[dim]  └─ Saved in {format_duration(step_times['save'])}[/dim]")
-
-    vtt_path: Path | None = None
-    if vtt:
-        step_start = time.time()
-        durations = [
-            len(audio) / SAMPLE_RATE if len(audio) else 0.0 for audio in audio_chunks
+        sections = [
+            (section.title, split_into_chunks(section.text))
+            for section in document.sections
+            if section.text.strip()
         ]
-        vtt_text = build_vtt(chunks, durations)
-        vtt_path = output.with_suffix(".vtt")
-        vtt_path.write_text(vtt_text, encoding="utf-8")
-        console.print(
-            f"[dim]  └─ Captions saved to {vtt_path} "
-            f"({format_duration(time.time() - step_start)})[/dim]"
-        )
+        chunks = [chunk for _, section_chunks in sections for chunk in section_chunks]
+        if not chunks:
+            raise ValueError("The document contains no narration text.")
+        if not yes:
+            display_checkpoint(
+                input_file,
+                output,
+                voice,
+                speed,
+                format_type,
+                chunks,
+                sum(len(section.text) for section in document.sections),
+            )
+            console.print(
+                Panel(
+                    "Press Enter to start synthesis. Press Ctrl+C to cancel.",
+                    title="Checkpoint",
+                    border_style="blue",
+                )
+            )
+            input()
 
-    # Summary
+        with (
+            tempfile.TemporaryDirectory(prefix="simple-tts-") as scratch,
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TimeElapsedColumn(),
+                TextColumn("•"),
+                TimeRemainingColumn(),
+                console=console,
+            ) as progress,
+        ):
+            task = progress.add_task("Load the TTS model...", total=None)
+            pipeline = load_tts(
+                selected_voices[0],
+                device=device,
+                report=lambda message: console.print(message, markup=False),
+            )
+            progress.update(task, completed=1, total=1)
+            task = progress.add_task("Synthesize speech...", total=len(chunks))
+            pcm_path = Path(scratch) / "narration.f32le"
+            chapters = []
+            with pcm_path.open("wb") as stream:
+                writer = PCMWriter(stream)
+                for index, (title, section_chunks) in enumerate(sections):
+                    section_voice = selected_voices[index % len(selected_voices)]
+                    start_sample = writer.samples
+                    for chunk in section_chunks:
+                        audio = synthesize(
+                            pipeline, chunk, voice=section_voice, speed=speed
+                        )
+                        writer.write(audio)
+                        del audio
+                        progress.update(task, advance=1)
+                    if writer.samples > start_sample:
+                        chapters.append(Chapter(title, start_sample, writer.samples))
+                total_samples = writer.samples
+            if not total_samples:
+                raise ValueError("Synthesis produced no audio.")
+
+            task = progress.add_task("Encode audio...", total=None)
+            with tempfile.TemporaryDirectory(
+                prefix=".simple-tts-", dir=output.parent
+            ) as encoded:
+                temp_output = Path(encoded) / output.name
+                encode_pcm(pcm_path, temp_output, format_type, chapters)
+                temp_output.replace(output)
+
+            progress.update(task, completed=1, total=1)
+    except KeyboardInterrupt:
+        console.print("[yellow]Cancelled.[/yellow]")
+        raise typer.Exit(130) from None
+    except Exception as e:
+        console.print("Error:", str(e), style="bold red", markup=False)
+        raise typer.Exit(1) from e
+
     total_time = time.time() - total_start
-    duration = get_audio_duration(audio_data, SAMPLE_RATE)
-
-    console.print()
+    duration = total_samples / SAMPLE_RATE
     summary = Table(title="Summary", show_header=False)
     summary.add_column("Metric", style="cyan")
     summary.add_column("Value", style="green")
     summary.add_row("Output File", str(output))
+    summary.add_row("Chapters", str(len(chapters)))
     summary.add_row("Audio Duration", format_duration(duration))
     summary.add_row("Processing Time", format_duration(total_time))
     if total_time > 0:
         summary.add_row("Speed Ratio", f"{duration / total_time:.1f}x realtime")
-    if vtt_path:
-        summary.add_row("Captions", str(vtt_path))
     console.print(summary)
-    console.print("\n[bold green]✅ Done![/]")
+    console.print("[bold green]Done.[/]")
 
 
 @app.command()
