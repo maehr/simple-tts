@@ -1,13 +1,4 @@
-"""Document conversion utilities for extracting text from various formats.
-
-This module provides functions to extract plain text from PDF, DOCX, EPUB, Markdown,
-and other document formats using system tools (pdftotext, pandoc).
-
-Examples:
-    >>> from simple_tts.converter import normalize_text
-    >>> normalize_text("  Hello   World  ")
-    'Hello World'
-"""
+"""Extract narration and chapters from prepared documents with Pandoc."""
 
 import html
 import re
@@ -51,8 +42,7 @@ def _pandoc(args: list[str]) -> str:
 def extract_sections(file_path: Path, chapter_level: int = 1) -> ExtractedDocument:
     """Convert once to Markdown, then split at the selected heading level.
 
-    PDFs form a single section. Pandoc normalizes other input formats to
-    ATX headings and indented code blocks before section extraction.
+    Pandoc normalizes input to ATX headings and indented code blocks.
     """
     if not 1 <= chapter_level <= 6:
         raise ValueError("Chapter level must be from 1 through 6.")
@@ -60,8 +50,11 @@ def extract_sections(file_path: Path, chapter_level: int = 1) -> ExtractedDocume
         raise FileNotFoundError(f"File not found: {file_path}")
     extension = file_path.suffix.lower()
     if extension == ".pdf":
-        text = normalize_text(extract_text_from_pdf(file_path))
-        return ExtractedDocument([Section(file_path.stem, text)], 0)
+        raise ValueError(
+            "PDF input is not supported. Convert the PDF to Markdown or plain text "
+            "first. Check reading order and remove unwanted text. "
+            "See https://github.com/maehr/simple-tts#prepare-input"
+        )
     if extension not in PANDOC_EXTENSIONS:
         raise ValueError(f"Unsupported file format: {extension}")
 
@@ -104,119 +97,6 @@ def extract_sections(file_path: Path, chapter_level: int = 1) -> ExtractedDocume
     if text:
         sections.append(Section(title if matches else file_path.stem, text))
     return ExtractedDocument(sections, matches)
-
-
-def extract_text_from_pdf(file_path: Path) -> str:
-    """Extract text from a PDF file using pdftotext.
-
-    Uses the poppler pdftotext utility with layout preservation for
-    better reading order.
-
-    Args:
-        file_path: Path to the PDF file.
-
-    Returns:
-        Extracted text content from the PDF.
-
-    Raises:
-        FileNotFoundError: If the file does not exist.
-        RuntimeError: If pdftotext fails to extract text.
-
-    Examples:
-        >>> from pathlib import Path
-        >>> import tempfile
-        >>> # This would require a real PDF file
-        >>> # text = extract_text_from_pdf(Path("document.pdf"))
-    """
-    if not file_path.exists():
-        raise FileNotFoundError(f"PDF file not found: {file_path}")
-
-    try:
-        result = subprocess.run(
-            ["pdftotext", "-layout", str(file_path), "-"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return result.stdout
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Failed to extract text from PDF: {e.stderr}") from e
-    except FileNotFoundError as e:
-        raise RuntimeError("pdftotext not found. Please install poppler-utils.") from e
-
-
-def extract_text_from_document(file_path: Path) -> str:
-    """Extract text from a document using pandoc.
-
-    Supports DOCX, EPUB, MD, QMD, RMD, and other formats that pandoc can handle.
-    Converts the document to plain text.
-
-    Args:
-        file_path: Path to the document file.
-
-    Returns:
-        Extracted text content from the document.
-
-    Raises:
-        FileNotFoundError: If the file does not exist.
-        RuntimeError: If pandoc fails to convert the document.
-
-    Examples:
-        >>> from pathlib import Path
-        >>> # This would require a real document file
-        >>> # text = extract_text_from_document(Path("document.docx"))
-    """
-    if not file_path.exists():
-        raise FileNotFoundError(f"Document file not found: {file_path}")
-
-    try:
-        result = subprocess.run(
-            ["pandoc", str(file_path), "-t", "plain"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return result.stdout
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Failed to convert document: {e.stderr}") from e
-    except FileNotFoundError as e:
-        raise RuntimeError("pandoc not found. Please install pandoc.") from e
-
-
-def extract_text(file_path: Path) -> str:
-    """Extract text from a file based on its extension.
-
-    Routes to the appropriate extraction function based on file extension:
-    - .pdf: Uses pdftotext
-    - .docx, .epub, .md, .qmd, .rmd, .txt, .rst, .html: Uses pandoc
-
-    Args:
-        file_path: Path to the file to extract text from.
-
-    Returns:
-        Extracted text content from the file.
-
-    Raises:
-        FileNotFoundError: If the file does not exist.
-        ValueError: If the file format is not supported.
-        RuntimeError: If text extraction fails.
-
-    Examples:
-        >>> from pathlib import Path
-        >>> # extract_text(Path("document.pdf"))  # Uses pdftotext
-        >>> # extract_text(Path("document.docx"))  # Uses pandoc
-    """
-    if not file_path.exists():
-        raise FileNotFoundError(f"File not found: {file_path}")
-
-    extension = file_path.suffix.lower()
-
-    if extension == ".pdf":
-        return extract_text_from_pdf(file_path)
-    elif extension in PANDOC_EXTENSIONS:
-        return extract_text_from_document(file_path)
-    else:
-        raise ValueError(f"Unsupported file format: {extension}")
 
 
 def normalize_text(text: str) -> str:

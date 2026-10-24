@@ -1,14 +1,10 @@
 """Tests for the voices module."""
 
-from simple_tts.voices import VOICES, get_voice_info, list_voices
+from simple_tts.voices import VOICES, get_voice_info
 
 
 class TestVoices:
     """Tests for VOICES constant."""
-
-    def test_voices_is_dict(self):
-        """Test that VOICES is a dictionary."""
-        assert isinstance(VOICES, dict)
 
     def test_contains_expected_voices(self):
         """Test that VOICES contains expected voice IDs."""
@@ -37,23 +33,3 @@ class TestGetVoiceInfo:
         info = get_voice_info("xyz_unknown")
         assert info["language"] == "Unknown"
         assert info["description"] == "Unknown voice"
-
-
-class TestListVoices:
-    """Tests for list_voices function."""
-
-    def test_returns_list(self):
-        """Test that list_voices returns a list."""
-        voices = list_voices()
-        assert isinstance(voices, list)
-
-    def test_list_is_sorted(self):
-        """Test that voice list is sorted."""
-        voices = list_voices()
-        assert voices == sorted(voices)
-
-    def test_contains_expected_voices(self):
-        """Test that list contains expected voices."""
-        voices = list_voices()
-        assert "af_bella" in voices
-        assert "bf_emma" in voices

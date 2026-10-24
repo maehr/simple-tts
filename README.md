@@ -1,10 +1,10 @@
 # simple-tts
 
-Convert documents to speech with [Kokoro TTS](https://github.com/hexgrad/kokoro).
+Convert prepared text and structured documents to speech with [Kokoro TTS](https://github.com/hexgrad/kokoro).
 
 ## Features
 
-- Read PDF, DOCX, EPUB, Markdown, QMD, RMD, TXT, RST, and HTML files.
+- Read Markdown, QMD, RMD, TXT, DOCX, EPUB, RST, and HTML files.
 - Select narrator voices and a speech speed from 0.5 to 2.0.
 - Write M4A, M4B, MP4, MP3, WAV, or Opus audio.
 - Add embedded chapters to M4B and MP4 files.
@@ -18,10 +18,10 @@ Install the system tools for your platform.
 
 ```bash
 # macOS
-brew install poppler pandoc ffmpeg
+brew install pandoc ffmpeg
 
 # Ubuntu or Debian
-sudo apt install poppler-utils pandoc ffmpeg
+sudo apt install pandoc ffmpeg
 ```
 
 Install the package with Python 3.12 or later.
@@ -44,19 +44,52 @@ The FFmpeg build must include the encoder for the selected format.
 
 ## Usage
 
+### Prepare input
+
+Input must contain readable prose in the correct order.
+Check the reading order before conversion.
+Remove unwanted text, such as page numbers, repeated headers, and footnotes.
+Markdown headings define chapters.
+
+Save this example as `paper.md`:
+
+```markdown
+# Introduction
+
+The paper examines the history of programming languages.
+
+# Findings
+
+The authors identify three main changes.
+```
+
+```bash
+simple-tts convert paper.md --format m4b
+```
+
+PDF input is not supported.
+Convert PDFs with an external tool before you use simple-tts:
+
+- [pdf-inspector](https://github.com/firecrawl/pdf-inspector): PDF-to-Markdown conversion.
+- [Poppler pdftotext](https://manpages.debian.org/unstable/poppler-utils/pdftotext.1.en.html): plain-text extraction.
+- [OCRmyPDF](https://ocrmypdf.readthedocs.io/en/latest/cookbook.html): text recognition for scans.
+
+These tools are optional and separate from simple-tts.
+Check the extracted text before conversion.
+
 ### Convert a document
 
 M4A is the default format.
 The default voice is `af_bella`.
 
 ```bash
-simple-tts convert document.pdf
+simple-tts convert paper.md
 ```
 
 An explicit output suffix selects the format.
 
 ```bash
-simple-tts convert document.pdf --voice bf_emma --output audio.mp3
+simple-tts convert paper.md --voice bf_emma --output audio.mp3
 ```
 
 Set the speed with `--speed`.
@@ -84,8 +117,7 @@ Valid chapter levels range from 1 through 6.
 Each heading appears once in the narration, including headings at other levels.
 Text before the first selected heading forms an `Introduction` chapter.
 If no headings match, the chapter uses the input stem as its title.
-PDF extraction uses `pdftotext` and creates one section.
-Other formats use one Pandoc call before chapter extraction.
+All input formats use one Pandoc call before chapter extraction.
 
 ```bash
 simple-tts convert book.qmd --output book.m4a --chapter-level 2
@@ -176,7 +208,7 @@ uv sync --locked --group dev
 Run the tests and code checks.
 
 ```bash
-uv run --locked --group dev pytest
+uv run --locked --group dev pytest tests src/simple_tts
 uv run --locked --group dev ruff check src tests
 uv run --locked --group dev ruff format --check src tests
 uv run --locked --group dev ty check src
