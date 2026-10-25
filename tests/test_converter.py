@@ -136,7 +136,8 @@ def test_nested_html_headings(tmp_path):
     assert [section.title for section in result.sections] == ["Introduction", "First"]
 
 
-def test_docx_headings(tmp_path):
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_docx_headings(tmp_path, sandbox):
     """DOCX styles retain the same chapter boundaries as Markdown."""
     source = tmp_path / "book.docx"
     subprocess.run(
@@ -145,7 +146,7 @@ def test_docx_headings(tmp_path):
         text=True,
         check=True,
     )
-    result = extract_sections(source, 2)
+    result = extract_sections(source, 2, sandbox=sandbox)
     assert [section.title for section in result.sections] == [
         "Introduction",
         "First",
@@ -174,9 +175,10 @@ def test_no_preamble_does_not_add_introduction(tmp_path):
     assert [section.text for section in result.sections] == ["First", "Last"]
 
 
-def test_epub_chapter_extraction():
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_epub_chapter_extraction(sandbox):
     """The bundled EPUB keeps its headings in structured extraction."""
-    result = extract_sections(Path(__file__).parent / "minimal.epub")
+    result = extract_sections(Path(__file__).parent / "minimal.epub", sandbox=sandbox)
     assert result.matched_headings == 3
     assert [section.title for section in result.sections] == [
         "Chapter 1",
@@ -186,6 +188,31 @@ def test_epub_chapter_extraction():
     for section in result.sections:
         assert section.text.startswith(section.title)
         assert section.text.count(section.title) == 1
+
+
+@pytest.mark.parametrize("reference", ["absolute", "relative", "symlink"])
+def test_sandbox_blocks_rst_includes(tmp_path, reference):
+    """Pandoc's sandbox blocks secondary files, including symlink targets."""
+    secret = tmp_path / "outside.txt"
+    secret.write_text("Confidential outside narration.\n")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    if reference == "absolute":
+        target = str(secret)
+    elif reference == "relative":
+        target = "../outside.txt"
+    else:
+        target = str(workspace / "linked.txt")
+        Path(target).symlink_to(secret)
+    source = workspace / "book.rst"
+    source.write_text(f"Public narration.\n\n.. include:: {target}\n")
+    unrestricted = extract_sections(source)
+    assert any(
+        "Confidential outside narration." in section.text
+        for section in unrestricted.sections
+    )
+    confined = extract_sections(source, sandbox=True)
+    assert [section.text for section in confined.sections] == ["Public narration."]
 
 
 def test_section_extraction_calls_pandoc_once(tmp_path, monkeypatch):

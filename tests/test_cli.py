@@ -285,7 +285,9 @@ def test_long_conversion_releases_audio_arrays(conversion, monkeypatch):
     monkeypatch.setattr(
         service,
         "extract_sections",
-        lambda *args: ExtractedDocument([Section("Long", "A" * 1000 * chunk_count)], 1),
+        lambda *args, **kwargs: ExtractedDocument(
+            [Section("Long", "A" * 1000 * chunk_count)], 1
+        ),
     )
 
     def synthesize(*args, **kwargs):
@@ -427,7 +429,7 @@ def test_voice_rotation_reuses_one_pipeline(conversion, monkeypatch):
     document = ExtractedDocument(
         [Section(title, "A" * 2000) for title in ["Introduction", "First", "Last"]], 2
     )
-    monkeypatch.setattr(service, "extract_sections", lambda *args: document)
+    monkeypatch.setattr(service, "extract_sections", lambda *args, **kwargs: document)
     loaded = []
     spoken = []
     engine = object()

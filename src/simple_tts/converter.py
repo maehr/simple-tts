@@ -51,10 +51,13 @@ def validate_input(file_path: Path) -> None:
         raise ValueError(f"Unsupported file format: {extension}")
 
 
-def extract_sections(file_path: Path, chapter_level: int = 1) -> ExtractedDocument:
+def extract_sections(
+    file_path: Path, chapter_level: int = 1, *, sandbox: bool = False
+) -> ExtractedDocument:
     """Convert once to Markdown, then split at the selected heading level.
 
     Pandoc normalizes input to ATX headings and indented code blocks.
+    Sandbox mode limits reader access to the selected input file.
     """
     if not 1 <= chapter_level <= 6:
         raise ValueError("Chapter level must be from 1 through 6.")
@@ -69,6 +72,8 @@ def extract_sections(file_path: Path, chapter_level: int = 1) -> ExtractedDocume
     ]
     if extension in {".md", ".qmd", ".rmd", ".txt"}:
         args.extend(["-f", "markdown"])
+    if sandbox:
+        args.append("--sandbox")
     markdown = _pandoc(args)
 
     def narration(text: str) -> str:

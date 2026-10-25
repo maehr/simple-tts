@@ -63,7 +63,7 @@ def slow_worker(request, workspace, scratch, staged, cancelled, sender):
 def external_worker(request, workspace, scratch, staged, cancelled, sender):
     """Block extraction in an external process that ignores SIGTERM."""
 
-    def extract(*args):
+    def extract(*args, **kwargs):
         run_command(
             [
                 sys.executable,
@@ -115,3 +115,19 @@ def stdio_worker(request, workspace, scratch, staged, cancelled, sender):
     (scratch / "worker.pid").write_text(str(os.getpid()))
     worker = slow_worker if request.text == "Wait for shutdown." else mock_worker
     worker(request, workspace, scratch, staged, cancelled, sender)
+
+
+def confined_worker(request, workspace, scratch, staged, cancelled, sender):
+    """Fail if any secondary file contents reach narration in a real worker."""
+    original_extract = service.extract_sections
+
+    def extract(*args, **kwargs):
+        document = original_extract(*args, **kwargs)
+        assert all(
+            "Confidential outside narration." not in section.text
+            for section in document.sections
+        ), "Pandoc disclosed a secondary file."
+        return document
+
+    service.extract_sections = extract
+    mock_worker(request, workspace, scratch, staged, cancelled, sender)

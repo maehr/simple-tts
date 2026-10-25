@@ -36,6 +36,10 @@ Issues: [#7](https://github.com/maehr/simple-tts/issues/7) and [#9](https://gith
 - Remove tests for obsolete helpers and redundant checks of return types.
 - Keep the Ruff configuration in `pyproject.toml` only.
 
+### Fixed
+
+- MCP extraction uses Pandoc's sandbox to block secondary file reads from includes and embedded frames.
+
 ## 0.2.0 - 2026-10-24
 
 ### Breaking changes

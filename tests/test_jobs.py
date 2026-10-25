@@ -12,6 +12,7 @@ from simple_tts.jobs import JobManager
 from simple_tts.service import ConversionRequest
 from simple_tts.workspace import Workspace
 from tests.workers import (
+    confined_worker,
     crashing_worker,
     external_worker,
     failing_worker,
@@ -371,6 +372,40 @@ def test_monitor_cancellation_stops_worker_and_cleans_files(tmp_path):
                 await task
             assert manager.get(start.job_id).state == "cancelled"
             assert_clean(tmp_path)
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("source_kind", ["rst", "html", "text"])
+def test_worker_confines_pandoc_secondary_reads(tmp_path, source_kind):
+    """MCP extraction cannot turn referenced files into narration."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    secret = tmp_path / "outside.txt"
+    secret.write_text("Confidential outside narration.\n")
+    if source_kind == "rst":
+        source = workspace / "book.rst"
+        source.write_text(f"Public narration.\n\n.. include:: {secret}\n")
+        options = {"input_file": Path(source.name)}
+    else:
+        text = f'<p>Public narration.</p><iframe src="{secret.as_uri()}"></iframe>'
+        if source_kind == "html":
+            source = workspace / "book.html"
+            source.write_text(text)
+            options = {"input_file": Path(source.name)}
+        else:
+            options = {"text": text}
+
+    async def scenario():
+        manager = JobManager(workspace, worker=confined_worker)
+        try:
+            start = manager.start(ConversionRequest(**options))
+            done = await finish(manager, start.job_id)
+            assert done.state == "succeeded", done.error
+            assert done.result.duration > 0
+            assert_clean(workspace)
         finally:
             await manager.close()
 

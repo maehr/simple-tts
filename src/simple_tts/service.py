@@ -170,6 +170,7 @@ def prepare_conversion(
     request: ConversionRequest,
     scratch: Path,
     *,
+    sandbox: bool = False,
     report: Callable[[ProgressEvent], None] = _ignore_event,
     check_cancelled: Callable[[], None] = _no_cancellation,
 ) -> PreparedConversion:
@@ -183,7 +184,7 @@ def prepare_conversion(
     if source is None:
         source = scratch / "text.md"
         source.write_text(request.text or "", encoding="utf-8")
-    document = extract_sections(source, request.chapter_level)
+    document = extract_sections(source, request.chapter_level, sandbox=sandbox)
     check_cancelled()
     sections = [
         (section.title, split_into_chunks(section.text))

@@ -280,6 +280,14 @@ The format defaults to `m4a` when neither option selects it.
 Paths are relative to the workspace.
 Absolute paths must remain within the workspace.
 The server rejects paths and symlinks that escape the workspace.
+
+MCP extraction uses Pandoc's `--sandbox` mode.
+Include directives and embedded frames cannot add secondary files to narration.
+Prepare complete narration before conversion.
+Pandoc must support `--sandbox`.
+If a reader requires data files, use a Pandoc build with embedded data files.
+See the [Pandoc sandbox documentation](https://pandoc.org/MANUAL.html#option--sandbox).
+
 Custom outputs require existing parent directories.
 The server rejects existing outputs, including files created during conversion.
 Default outputs use `.simple-tts/audio/<job_id>.<format>` within the workspace.

@@ -85,7 +85,11 @@ def conversion_worker(
                 Workspace(workspace).copy_input(request.input_file, source)
                 request = replace(request, input_file=source)
             prepared = prepare_conversion(
-                request, scratch, report=sender.send, check_cancelled=check
+                request,
+                scratch,
+                sandbox=True,
+                report=sender.send,
+                check_cancelled=check,
             )
             result = execute_conversion(
                 prepared, scratch, staged, report=sender.send, check_cancelled=check
