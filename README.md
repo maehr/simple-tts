@@ -11,6 +11,7 @@ Convert prepared text and structured documents to speech with [Kokoro TTS](https
 - Rotate narrator voices across chapters.
 - Use an available GPU with CPU fallback during initialization.
 - Keep audio memory use bounded by the text chunk size.
+- Run a local MCP server with cancellable conversion jobs.
 
 ## Installation
 
@@ -197,25 +198,148 @@ Check the system tools with this command.
 simple-tts check-deps
 ```
 
+## Local MCP server
+
+The optional Model Context Protocol (MCP) server supports local desktop assistants and coding agents.
+Install the MCP extra with this command.
+
+```bash
+pip install "simple-tts[mcp]"
+```
+
+Start the server with an existing workspace directory.
+
+```bash
+simple-tts mcp --workspace /absolute/path/to/workspace
+```
+
+The server uses stdio.
+Diagnostics use stderr.
+The server reserves stdout for MCP messages.
+The first conversion can download the model and language resources.
+
+### Configure a client
+
+Add this entry to your client's MCP configuration.
+Replace both paths with absolute paths on your computer.
+
+```json
+{
+  "mcpServers": {
+    "simple-tts": {
+      "command": "/absolute/path/to/venv/bin/simple-tts",
+      "args": ["mcp", "--workspace", "/absolute/path/to/workspace"]
+    }
+  }
+}
+```
+
+The executable must use an environment that contains `simple-tts[mcp]`.
+Pandoc and FFmpeg must be available in the server's `PATH`.
+
+### Convert text or a document
+
+The server exposes five tools.
+
+| Tool | Purpose |
+| --- | --- |
+| `list_voices()` | Return voice IDs, languages, and descriptions. |
+| `check_dependencies()` | Return Pandoc and FFmpeg availability. |
+| `start_conversion(...)` | Validate a request and return a job ID. |
+| `get_conversion(job_id)` | Return progress, errors, or completed audio metadata. |
+| `cancel_conversion(job_id)` | Request cancellation and return the current job state. |
+
+Call `start_conversion` with exactly one source: `text` or `input_file`.
+The server reads supplied text as Markdown through Pandoc.
+Use these tool arguments for text conversion.
+
+```json
+{
+  "text": "# Introduction\n\nThis is prepared narration.\n\n# Findings\n\nThese are the findings.",
+  "voices": ["af_bella", "am_adam"],
+  "format": "m4b"
+}
+```
+
+Use these tool arguments for a document within the workspace.
+
+```json
+{
+  "input_file": "book.md",
+  "output": "book.m4b",
+  "chapter_level": 1,
+  "device": "auto"
+}
+```
+
+The server applies the CLI rules for voices, chapters, speed, formats, and device selection.
+Defaults are `voices=["af_bella"]`, `speed=1.1`, `chapter_level=1`, and `device="auto"`.
+An output suffix selects the format.
+The format defaults to `m4a` when neither option selects it.
+
+Paths are relative to the workspace.
+Absolute paths must remain within the workspace.
+The server rejects paths and symlinks that escape the workspace.
+Custom outputs require existing parent directories.
+The server rejects existing outputs, including files created during conversion.
+Default outputs use `.simple-tts/audio/<job_id>.<format>` within the workspace.
+
+### Poll or cancel a job
+
+`start_conversion` returns a `job_id` before extraction starts.
+The server permits one active conversion at a time.
+Another start request returns a busy error.
+
+Call `get_conversion` with the returned ID.
+
+```json
+{"job_id": "<job_id>"}
+```
+
+The response includes `state`, `phase`, `completed_chunks`, and `total_chunks`.
+The total chunk count is `null` until extraction completes.
+States are `running`, `cancelling`, `succeeded`, `failed`, and `cancelled`.
+Request errors are MCP tool errors.
+Worker errors appear in the job's `error` field.
+
+A successful job includes a `result` object.
+It contains `path`, `uri`, `format`, `duration`, `processing_time`, and `chapters`.
+Durations and chapter boundaries use seconds.
+Each chapter contains `title`, `start`, and `end`.
+File URIs require access to the server's local filesystem.
+The server does not send audio bytes through MCP.
+
+Call `cancel_conversion` with the same job ID to request cancellation.
+The worker checks cancellation between stages and chunks.
+After five seconds, the server terminates remaining work and external tools.
+The server checks cancellation before it publishes the final file.
+
+Job records remain in memory until shutdown.
+Shutdown cancels active work and removes temporary files.
+Completed audio files remain in the workspace.
+Jobs do not resume after a server restart.
+
 ## Development
 
 Install the locked development dependencies.
 
 ```bash
-uv sync --locked --group dev
+uv sync --locked --group dev --extra mcp
 ```
 
 Run the tests and code checks.
 
 ```bash
-uv run --locked --group dev pytest tests src/simple_tts
-uv run --locked --group dev ruff check src tests
-uv run --locked --group dev ruff format --check src tests
-uv run --locked --group dev ty check src
+uv run --locked --group dev --extra mcp pytest tests src/simple_tts
+uv run --locked --group dev --extra mcp ruff check src tests
+uv run --locked --group dev --extra mcp ruff format --check src tests
+uv run --locked --group dev --extra mcp ty check src
 ```
 
 Tests use mocked synthesis and real Pandoc, FFmpeg, and ffprobe.
 They do not download the speech model.
+MCP tests use FastMCP's client and spawned workers with mocked synthesis.
+CI also checks the CLI without the MCP extra.
 
 ## Versioning
 
