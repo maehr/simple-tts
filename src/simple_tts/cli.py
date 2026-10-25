@@ -296,6 +296,32 @@ def _display_summary(result: ConversionResult, total_time: float) -> None:
 
 
 @app.command()
+def mcp(
+    workspace: Annotated[
+        Path,
+        typer.Option(
+            "--workspace",
+            help="Existing directory for MCP input and output files.",
+            exists=True,
+            file_okay=False,
+            resolve_path=True,
+        ),
+    ],
+) -> None:
+    """Run the optional local MCP server over stdio."""
+    try:
+        from simple_tts.mcp import create_server
+
+        server = create_server(workspace)
+    except ImportError as error:
+        Console(stderr=True).print(
+            'Install MCP support: pip install "simple-tts[mcp]"', markup=False
+        )
+        raise typer.Exit(1) from error
+    server.run(transport="stdio", show_banner=False)
+
+
+@app.command()
 def voices() -> None:
     """List available voices."""
     table = Table(title="Available Voices")

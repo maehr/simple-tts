@@ -556,3 +556,45 @@ def test_missing_output_directory_stops_before_extraction(conversion, monkeypatc
     assert result.exit_code == 1
     assert "Output directory does not exist" in result.output
     extract.assert_not_called()
+
+
+def test_cli_without_mcp_extra(tmp_path):
+    """The CLI converts files without FastMCP and explains how to install it."""
+    import subprocess
+    import sys
+
+    script = """
+import importlib.abc
+import sys
+from pathlib import Path
+class BlockMCP(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, *args):
+        if fullname.split('.')[0] in {'fastmcp', 'anyio'}:
+            raise ModuleNotFoundError(fullname)
+sys.meta_path.insert(0, BlockMCP())
+import numpy as np
+from typer.testing import CliRunner
+from simple_tts.cli import app
+from simple_tts import service
+assert 'fastmcp' not in sys.modules
+runner = CliRunner()
+assert runner.invoke(app, ['version']).exit_code == 0
+source = Path(sys.argv[1]) / 'input.md'
+source.write_text('Hello.')
+service.load_tts = lambda *args, **kwargs: object()
+service.synthesize = lambda *args, **kwargs: np.zeros(2400, dtype=np.float32)
+converted = runner.invoke(app, ['convert', str(source), '-y'])
+assert converted.exit_code == 0, converted.output
+assert source.with_suffix('.m4a').exists()
+missing = runner.invoke(app, ['mcp', '--workspace', str(source.parent)])
+assert missing.exit_code == 1
+assert missing.stdout == ''
+assert 'pip install "simple-tts[mcp]"' in missing.stderr
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
