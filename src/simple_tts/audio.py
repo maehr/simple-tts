@@ -16,6 +16,8 @@ from typing import BinaryIO
 
 import numpy as np
 
+from simple_tts.processes import run_command
+
 SAMPLE_RATE = 24000
 SUPPORTED_FORMATS = {"m4a", "m4b", "mp4", "mp3", "wav", "opus"}
 CODECS = {
@@ -74,7 +76,7 @@ def write_ffmetadata(chapters: list[Chapter], path: Path) -> None:
 
 def _run_ffmpeg(cmd: list[str]) -> None:
     try:
-        subprocess.run(cmd, capture_output=True, text=True, check=True)
+        run_command(cmd)
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Failed to encode audio: {e.stderr}") from e
     except FileNotFoundError as e:
@@ -93,7 +95,9 @@ def encode_pcm(
         raise ValueError(f"Unsupported audio format: {format_type}")
     if input_path.stat().st_size == 0:
         raise ValueError("Synthesis produced no audio.")
-    with tempfile.TemporaryDirectory(prefix="simple-tts-metadata-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="simple-tts-metadata-", dir=input_path.parent
+    ) as directory:
         cmd = [
             "ffmpeg",
             "-y",

@@ -27,19 +27,20 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from simple_tts.audio import (
-    SUPPORTED_FORMATS,
-    Chapter,
-    PCMWriter,
-    encode_pcm,
-)
-from simple_tts.converter import extract_sections, split_into_chunks
 from simple_tts.dependencies import (
-    check_dependencies,
     install_dependencies_brew,
     print_dependency_status,
 )
-from simple_tts.tts import DEVICES, SAMPLE_RATE, load_tts, synthesize
+from simple_tts.service import (
+    ConversionRequest,
+    ConversionResult,
+    PreparedConversion,
+    ProgressEvent,
+    execute_conversion,
+    parse_voices,
+    prepare_conversion,
+    validate_request,
+)
 from simple_tts.voices import VOICES, get_voice_info
 
 app = typer.Typer(
@@ -122,39 +123,6 @@ def display_checkpoint(
     console.print()
 
 
-def resolve_output(
-    input_file: Path, output: Path | None, format_type: str | None
-) -> tuple[Path, str]:
-    """Resolve the format before extraction or synthesis starts."""
-    requested = format_type.lower() if format_type is not None else None
-    if requested is not None and requested not in SUPPORTED_FORMATS:
-        raise ValueError(f"Unsupported audio format: {requested}")
-    suffix = output.suffix.lstrip(".").lower() if output is not None else ""
-    if suffix and suffix not in SUPPORTED_FORMATS:
-        raise ValueError(f"Unsupported output suffix: .{suffix}")
-    if requested and suffix and requested != suffix:
-        raise ValueError(
-            f"Format '{requested}' conflicts with output suffix '.{suffix}'."
-        )
-    selected = requested or suffix or "m4a"
-    if output is None:
-        output = input_file.with_suffix(f".{selected}")
-    elif not suffix:
-        output = output.with_suffix(f".{selected}")
-    return output, selected
-
-
-def parse_voices(value: str) -> list[str]:
-    """Validate a rotation that shares one Kokoro language code."""
-    voices = [voice.strip() for voice in value.split(",")]
-    for voice in voices:
-        if voice not in VOICES:
-            raise ValueError(f"Unknown voice '{voice}'. Run 'simple-tts voices'.")
-    if len({voice[0] for voice in voices}) != 1:
-        raise ValueError("All voices must share one Kokoro language code.")
-    return voices
-
-
 @app.command()
 def convert(
     input_file: Annotated[
@@ -214,17 +182,18 @@ def convert(
     """Convert a document to speech with optional chapters and voice rotation."""
     total_start = time.time()
     try:
-        output, format_type = resolve_output(input_file, output, format_type)
-        if device not in DEVICES:
-            raise ValueError("Device must be auto, cuda, mps, or cpu.")
         selected_voices = parse_voices(voice)
         voice = ",".join(selected_voices)
-        if not output.parent.is_dir():
-            raise ValueError(f"Output directory does not exist: {output.parent}")
-        if input_file.resolve() == output.resolve():
-            raise ValueError("The output path must differ from the input path.")
-        if output.is_dir():
-            raise ValueError(f"An output file path is a directory: {output}")
+        request = ConversionRequest(
+            input_file=input_file,
+            voices=tuple(selected_voices),
+            output=output,
+            format_type=format_type,
+            speed=speed,
+            chapter_level=chapter_level,
+            device=device,
+        )
+        output, format_type = validate_request(request)
     except ValueError as e:
         console.print(f"[bold red]Error:[/] {e}")
         raise typer.Exit(1) from e
@@ -234,90 +203,9 @@ def convert(
     console.print(f"[bold blue]Voice:[/] {voice}")
 
     try:
-        document = extract_sections(input_file, chapter_level)
-        if not document.matched_headings:
-            console.print(
-                f"[yellow]Warning: No headings match level {chapter_level}. "
-                f"Use one chapter named '{input_file.stem}'.[/yellow]"
-            )
-        sections = [
-            (section.title, split_into_chunks(section.text))
-            for section in document.sections
-            if section.text.strip()
-        ]
-        chunks = [chunk for _, section_chunks in sections for chunk in section_chunks]
-        if not chunks:
-            raise ValueError("The document contains no narration text.")
-        check_dependencies(console)
-        if not yes:
-            display_checkpoint(
-                input_file,
-                output,
-                voice,
-                speed,
-                format_type,
-                chunks,
-                sum(len(section.text) for section in document.sections),
-            )
-            console.print(
-                Panel(
-                    "Press Enter to start synthesis. Press Ctrl+C to cancel.",
-                    title="Checkpoint",
-                    border_style="blue",
-                )
-            )
-            input()
-
-        with (
-            tempfile.TemporaryDirectory(prefix="simple-tts-") as scratch,
-            Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeElapsedColumn(),
-                TextColumn("•"),
-                TimeRemainingColumn(),
-                console=console,
-            ) as progress,
-        ):
-            task = progress.add_task("Load the TTS model...", total=None)
-            pipeline = load_tts(
-                selected_voices[0],
-                device=device,
-                report=lambda message: console.print(message, markup=False),
-            )
-            progress.update(task, completed=1, total=1)
-            task = progress.add_task("Synthesize speech...", total=len(chunks))
-            pcm_path = Path(scratch) / "narration.f32le"
-            chapters = []
-            with pcm_path.open("wb") as stream:
-                writer = PCMWriter(stream)
-                for index, (title, section_chunks) in enumerate(sections):
-                    section_voice = selected_voices[index % len(selected_voices)]
-                    start_sample = writer.samples
-                    for chunk in section_chunks:
-                        audio = synthesize(
-                            pipeline, chunk, voice=section_voice, speed=speed
-                        )
-                        writer.write(audio)
-                        del audio
-                        progress.update(task, advance=1)
-                    if writer.samples > start_sample:
-                        chapters.append(Chapter(title, start_sample, writer.samples))
-                total_samples = writer.samples
-            if not total_samples:
-                raise ValueError("Synthesis produced no audio.")
-
-            task = progress.add_task("Encode audio...", total=None)
-            with tempfile.TemporaryDirectory(
-                prefix=".simple-tts-", dir=output.parent
-            ) as encoded:
-                temp_output = Path(encoded) / output.name
-                encode_pcm(pcm_path, temp_output, format_type, chapters)
-                temp_output.replace(output)
-
-            progress.update(task, completed=1, total=1)
+        with tempfile.TemporaryDirectory(prefix="simple-tts-") as scratch:
+            prepared = prepare_conversion(request, Path(scratch))
+            result = _convert_prepared(prepared, Path(scratch), yes, voice)
     except KeyboardInterrupt:
         console.print("[yellow]Cancelled.[/yellow]")
         raise typer.Exit(130) from None
@@ -326,18 +214,85 @@ def convert(
         raise typer.Exit(1) from e
 
     total_time = time.time() - total_start
-    duration = total_samples / SAMPLE_RATE
+    _display_summary(result, total_time)
+    console.print("[bold green]Done.[/]")
+
+
+def _convert_prepared(
+    prepared: PreparedConversion, scratch: Path, yes: bool, voice: str
+) -> ConversionResult:
+    request = prepared.request
+    input_file = request.input_file
+    assert input_file is not None
+    output = prepared.output
+    if not prepared.document.matched_headings:
+        console.print(
+            f"[yellow]Warning: No headings match level {request.chapter_level}. "
+            f"Use one chapter named '{input_file.stem}'.[/yellow]"
+        )
+    if not yes:
+        display_checkpoint(
+            input_file,
+            output,
+            voice,
+            request.speed,
+            prepared.format_type,
+            prepared.chunks,
+            sum(len(section.text) for section in prepared.document.sections),
+        )
+        console.print(
+            Panel(
+                "Press Enter to start synthesis. Press Ctrl+C to cancel.",
+                title="Checkpoint",
+                border_style="blue",
+            )
+        )
+        input()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        TextColumn("•"),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Load the TTS model...", total=None)
+
+        def report(event: ProgressEvent) -> None:
+            if event.message:
+                console.print(event.message, markup=False)
+            progress.update(
+                task,
+                description=f"{event.phase.capitalize()}...",
+                completed=event.completed_chunks,
+                total=event.total_chunks if event.phase == "synthesizing" else None,
+            )
+
+        with tempfile.TemporaryDirectory(
+            prefix=".simple-tts-", dir=output.parent
+        ) as encoded:
+            temp_output = Path(encoded) / output.name
+            result = execute_conversion(prepared, scratch, temp_output, report=report)
+            temp_output.replace(output)
+
+        progress.update(task, completed=1, total=1)
+    return result
+
+
+def _display_summary(result: ConversionResult, total_time: float) -> None:
     summary = Table(title="Summary", show_header=False)
     summary.add_column("Metric", style="cyan")
     summary.add_column("Value", style="green")
-    summary.add_row("Output File", str(output))
-    summary.add_row("Chapters", str(len(chapters)))
-    summary.add_row("Audio Duration", format_duration(duration))
+    summary.add_row("Output File", result.path)
+    summary.add_row("Chapters", str(len(result.chapters)))
+    summary.add_row("Audio Duration", format_duration(result.duration))
     summary.add_row("Processing Time", format_duration(total_time))
     if total_time > 0:
-        summary.add_row("Speed Ratio", f"{duration / total_time:.1f}x realtime")
+        summary.add_row("Speed Ratio", f"{result.duration / total_time:.1f}x realtime")
     console.print(summary)
-    console.print("[bold green]Done.[/]")
 
 
 @app.command()
