@@ -410,3 +410,26 @@ def test_worker_confines_pandoc_secondary_reads(tmp_path, source_kind):
             await manager.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "unsupported", ["windows", "missing_file_control", "missing_process_control"]
+)
+def test_unsupported_platform_fails_before_workspace_access(
+    tmp_path, monkeypatch, unsupported
+):
+    """Unavailable POSIX operations produce a clear error before any file access."""
+    if unsupported == "windows":
+        monkeypatch.setattr(jobs.sys, "platform", "win32")
+    elif unsupported == "missing_file_control":
+        monkeypatch.delattr(jobs.os, "O_NOFOLLOW")
+    else:
+        monkeypatch.delattr(jobs.os, "setsid")
+    workspace = Mock()
+    context = Mock()
+    monkeypatch.setattr(jobs, "Workspace", workspace)
+    monkeypatch.setattr(jobs.multiprocessing, "get_context", context)
+    with pytest.raises(RuntimeError, match="MCP server requires POSIX support"):
+        JobManager(tmp_path)
+    workspace.assert_not_called()
+    context.assert_not_called()

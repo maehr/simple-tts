@@ -324,3 +324,14 @@ create_server(workspace, manager=manager).run(transport='stdio', show_banner=Fal
                     pass
 
     asyncio.run(scenario())
+
+
+def test_server_rejects_windows_with_an_injected_manager(tmp_path, monkeypatch):
+    """An injected manager cannot bypass the server's platform guard."""
+    from unittest.mock import Mock
+
+    from simple_tts import jobs
+
+    monkeypatch.setattr(jobs.sys, "platform", "win32")
+    with pytest.raises(RuntimeError, match="Windows is not supported"):
+        create_server(tmp_path, manager=Mock())

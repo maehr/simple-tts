@@ -33,6 +33,20 @@ TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
 CANCEL_TIMEOUT = 5.0
 
 
+def require_mcp_platform() -> None:
+    """Reject platforms without the file and process controls used by MCP."""
+    required = ("O_DIRECTORY", "O_NOFOLLOW", "setsid", "killpg")
+    if (
+        sys.platform == "win32"
+        or os.name != "posix"
+        or any(not hasattr(os, name) for name in required)
+    ):
+        raise RuntimeError(
+            "The MCP server requires POSIX support (macOS or Linux). "
+            "Windows is not supported. Use 'simple-tts convert' on Windows."
+        )
+
+
 class CancellationEvent(Protocol):
     """The process-safe event interface used by workers."""
 
@@ -127,6 +141,7 @@ class JobManager:
         worker: Callable = conversion_worker,
     ) -> None:
         """Use spawn so model runtimes never inherit a server process."""
+        require_mcp_platform()
         self.workspace = Workspace(workspace)
         self.records: dict[str, JobStatus] = {}
         self._context = multiprocessing.get_context("spawn")

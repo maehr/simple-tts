@@ -308,7 +308,7 @@ def mcp(
         ),
     ],
 ) -> None:
-    """Run the optional local MCP server over stdio."""
+    """Run the local MCP server on macOS or Linux over stdio."""
     try:
         from simple_tts.mcp import create_server
 
@@ -317,6 +317,9 @@ def mcp(
         Console(stderr=True).print(
             'Install MCP support: pip install "simple-tts[mcp]"', markup=False
         )
+        raise typer.Exit(1) from error
+    except RuntimeError as error:
+        Console(stderr=True).print("Error:", str(error), style="bold red", markup=False)
         raise typer.Exit(1) from error
     server.run(transport="stdio", show_banner=False)
 

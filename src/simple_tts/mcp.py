@@ -12,7 +12,7 @@ from pydantic import Field
 
 from simple_tts import __version__
 from simple_tts.dependencies import DEPENDENCIES, is_command_available
-from simple_tts.jobs import JobManager, JobStatus
+from simple_tts.jobs import JobManager, JobStatus, require_mcp_platform
 from simple_tts.service import ConversionRequest
 from simple_tts.voices import VOICES
 
@@ -38,6 +38,8 @@ class VoiceCatalog:
 
 def create_server(workspace: Path, *, manager: JobManager | None = None) -> FastMCP:
     """Build a stdio server without loading a speech model."""
+    require_mcp_platform()
+
     import anyio
     from fastmcp import FastMCP
     from fastmcp.exceptions import ToolError

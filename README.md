@@ -201,6 +201,10 @@ simple-tts check-deps
 ## Local MCP server
 
 The optional Model Context Protocol (MCP) server supports local desktop assistants and coding agents.
+The MCP server supports macOS and Linux.
+On Windows, the MCP command exits with a platform error.
+The `convert` command remains available on Windows.
+
 Install the MCP extra with this command.
 
 ```bash

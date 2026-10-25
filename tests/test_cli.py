@@ -600,3 +600,19 @@ assert 'pip install "simple-tts[mcp]"' in missing.stderr
         timeout=15,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_mcp_windows_startup_error_uses_only_stderr(tmp_path, monkeypatch):
+    """Windows gets a useful MCP startup error while ordinary commands still work."""
+    from simple_tts import jobs
+
+    monkeypatch.setattr(jobs.sys, "platform", "win32")
+    result = runner.invoke(app, ["mcp", "--workspace", str(tmp_path)])
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    stderr = " ".join(result.stderr.split())
+    assert "requires POSIX support" in stderr
+    assert "Windows is not supported" in stderr
+    assert "simple-tts convert" in stderr
+    assert "Traceback" not in result.stderr
+    assert runner.invoke(app, ["version"]).exit_code == 0
