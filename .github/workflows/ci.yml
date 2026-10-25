@@ -19,13 +19,13 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --locked --dev --extra mcp
 
       - name: Run ruff check
-        run: uv run ruff check src tests
+        run: uv run --locked --extra mcp ruff check src tests
 
       - name: Run ruff format check
-        run: uv run ruff format --check src tests
+        run: uv run --locked --extra mcp ruff format --check src tests
 
   type-check:
     runs-on: ubuntu-latest
@@ -36,10 +36,10 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --locked --dev --extra mcp
 
       - name: Run ty type check
-        run: uv run ty check src
+        run: uv run --locked --extra mcp ty check src
 
   test:
     runs-on: ${{ matrix.os }}
@@ -68,11 +68,11 @@ jobs:
           brew install pandoc ffmpeg
 
       - name: Install Python dependencies
-        run: uv sync --dev
+        run: uv sync --locked --dev --extra mcp
 
       - name: Run tests with coverage
         run: |
-          uv run pytest tests --doctest-modules src/simple_tts \
+          uv run --locked --extra mcp pytest tests --doctest-modules src/simple_tts \
             --cov=simple_tts --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage reports
@@ -81,3 +81,19 @@ jobs:
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
+
+  cli-without-mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc ffmpeg
+      - name: Install without the MCP extra
+        run: uv sync --locked --dev
+      - name: Check the CLI without FastMCP
+        run: uv run --locked pytest tests/test_cli.py
