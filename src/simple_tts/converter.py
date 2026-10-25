@@ -6,6 +6,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from simple_tts.processes import run_command
+
 PANDOC_EXTENSIONS = {".epub", ".docx", ".md", ".qmd", ".rmd", ".txt", ".rst", ".html"}
 
 
@@ -27,25 +29,15 @@ class ExtractedDocument:
 
 def _pandoc(args: list[str]) -> str:
     try:
-        return subprocess.run(
-            ["pandoc", *args],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
+        return run_command(["pandoc", *args]).stdout
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Failed to convert document: {e.stderr}") from e
     except FileNotFoundError as e:
         raise RuntimeError("pandoc not found. Install pandoc.") from e
 
 
-def extract_sections(file_path: Path, chapter_level: int = 1) -> ExtractedDocument:
-    """Convert once to Markdown, then split at the selected heading level.
-
-    Pandoc normalizes input to ATX headings and indented code blocks.
-    """
-    if not 1 <= chapter_level <= 6:
-        raise ValueError("Chapter level must be from 1 through 6.")
+def validate_input(file_path: Path) -> None:
+    """Reject unsupported sources before running external tools."""
     if not file_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
     extension = file_path.suffix.lower()
@@ -58,6 +50,19 @@ def extract_sections(file_path: Path, chapter_level: int = 1) -> ExtractedDocume
     if extension not in PANDOC_EXTENSIONS:
         raise ValueError(f"Unsupported file format: {extension}")
 
+
+def extract_sections(
+    file_path: Path, chapter_level: int = 1, *, sandbox: bool = False
+) -> ExtractedDocument:
+    """Convert once to Markdown, then split at the selected heading level.
+
+    Pandoc normalizes input to ATX headings and indented code blocks.
+    Sandbox mode limits reader access to the selected input file.
+    """
+    if not 1 <= chapter_level <= 6:
+        raise ValueError("Chapter level must be from 1 through 6.")
+    validate_input(file_path)
+    extension = file_path.suffix.lower()
     args = [
         str(file_path),
         "-t",
@@ -67,6 +72,8 @@ def extract_sections(file_path: Path, chapter_level: int = 1) -> ExtractedDocume
     ]
     if extension in {".md", ".qmd", ".rmd", ".txt"}:
         args.extend(["-f", "markdown"])
+    if sandbox:
+        args.append("--sandbox")
     markdown = _pandoc(args)
 
     def narration(text: str) -> str:

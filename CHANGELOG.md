@@ -2,9 +2,21 @@
 
 Version numbers follow the [versioning policy](README.md#versioning).
 
-## Unreleased
+## 0.3.0 - Unreleased
 
-Issue: [#7](https://github.com/maehr/simple-tts/issues/7).
+Issues: [#7](https://github.com/maehr/simple-tts/issues/7) and [#9](https://github.com/maehr/simple-tts/issues/9).
+
+### Added
+
+- The optional `mcp` extra installs `fastmcp>=4.1.3,<5`.
+- `simple-tts mcp --workspace /absolute/path` serves five local tools over stdio.
+- Conversion jobs accept a document path or Markdown text with the existing conversion options.
+- Spawned workers keep the server responsive during extraction, model loading, synthesis, and encoding.
+- Job tools report progress, request cancellation, and return local audio metadata.
+- Workspace checks reject escaped paths, symlinks, and output collisions.
+- The server publishes completed files atomically and removes temporary files after each job.
+- Shutdown cancels active work and keeps completed audio files.
+- MCP tests cover client schemas, structured results, cancellation, shutdown, and publication races.
 
 ### Breaking changes
 
@@ -15,11 +27,20 @@ Issue: [#7](https://github.com/maehr/simple-tts/issues/7).
 
 ### Changed
 
+- The CLI and MCP server use one typed conversion service.
+- CI checks the MCP extra on Ubuntu and macOS with Python 3.12 and 3.13.
+- CI also checks the CLI without the MCP extra.
 - Pandoc and FFmpeg are the only required system tools. Dependency checks, installers, and CI no longer require Poppler.
 - CLI help and examples focus on prepared text and structured Markdown.
 - The input guide includes a `paper.md` example and links to external PDF tools.
 - Remove tests for obsolete helpers and redundant checks of return types.
 - Keep the Ruff configuration in `pyproject.toml` only.
+
+### Fixed
+
+- MCP extraction uses Pandoc's sandbox to block secondary file reads from includes and embedded frames.
+- MCP startup rejects Windows with a clear error before it accesses workspace files or starts workers.
+- The MCP guide states the platform requirements and Pandoc sandbox requirements.
 
 ## 0.2.0 - 2026-10-24
 

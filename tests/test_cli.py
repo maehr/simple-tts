@@ -1,6 +1,7 @@
 """Tests for the CLI module."""
 
 import re
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,9 @@ class TestCLIVersion:
         result = runner.invoke(app, ["version"])
         assert result.exit_code == 0
         assert "simple-tts" in result.stdout
-        assert "0.2.0" in result.stdout
+        from simple_tts import __version__
+
+        assert __version__ in result.stdout
 
 
 class TestCLIVoices:
@@ -90,13 +93,13 @@ class TestCLICheckDeps:
 @pytest.fixture
 def conversion(tmp_path, monkeypatch):
     """Prepare a deterministic conversion without loading a real model."""
-    from simple_tts import cli
+    from simple_tts import service
 
     source = tmp_path / "book.md"
     source.write_text("Preamble.\n\n## First\n\nBody.\n\n## Last\n\nEnd.")
-    monkeypatch.setattr(cli, "check_dependencies", lambda *args: True)
-    monkeypatch.setattr(cli, "load_tts", lambda *args, **kwargs: object())
-    return cli, source
+    monkeypatch.setattr(service, "require_dependencies", lambda *args: True)
+    monkeypatch.setattr(service, "load_tts", lambda *args, **kwargs: object())
+    return service, source
 
 
 @pytest.mark.parametrize("suffix", [".pdf", ".PDF"])
@@ -104,7 +107,7 @@ def test_pdf_rejected_before_external_tools_or_synthesis(tmp_path, monkeypatch, 
     """PDF input points to preparation guidance without loading tools or models."""
     from unittest.mock import Mock
 
-    from simple_tts import cli, converter
+    from simple_tts import converter, service
 
     source = tmp_path / f"paper{suffix}"
     source.write_bytes(b"%PDF-1.7")
@@ -112,8 +115,8 @@ def test_pdf_rejected_before_external_tools_or_synthesis(tmp_path, monkeypatch, 
     check = Mock()
     load = Mock()
     monkeypatch.setattr(converter.subprocess, "run", run)
-    monkeypatch.setattr(cli, "check_dependencies", check)
-    monkeypatch.setattr(cli, "load_tts", load)
+    monkeypatch.setattr(service, "require_dependencies", check)
+    monkeypatch.setattr(service, "load_tts", load)
     result = runner.invoke(app, ["convert", str(source), "-y"])
     assert result.exit_code == 1
     assert "PDF input is not supported" in result.output
@@ -144,7 +147,7 @@ def test_output_format_resolution(
     """Suffix inference preserves M4A as the default."""
     import numpy as np
 
-    cli, source = conversion
+    service, source = conversion
     calls = []
 
     def encode(pcm, output, format_type, chapters):
@@ -153,8 +156,8 @@ def test_output_format_resolution(
         assert output.parent.parent == source.parent
         output.write_bytes(b"encoded")
 
-    monkeypatch.setattr(cli, "synthesize", lambda *args, **kwargs: np.zeros(240))
-    monkeypatch.setattr(cli, "encode_pcm", encode)
+    monkeypatch.setattr(service, "synthesize", lambda *args, **kwargs: np.zeros(240))
+    monkeypatch.setattr(service, "encode_pcm", encode)
     arguments = list(arguments)
     if "--output" in arguments:
         arguments[-1] = str(source.parent / arguments[-1])
@@ -186,11 +189,11 @@ def test_rejected_options_precede_synthesis(conversion, monkeypatch, arguments):
     """Invalid options never start extraction or synthesis."""
     from unittest.mock import Mock
 
-    cli, source = conversion
+    service, source = conversion
     extract = Mock(side_effect=AssertionError("Must not extract"))
     load = Mock(side_effect=AssertionError("Must not load"))
-    monkeypatch.setattr(cli, "extract_sections", extract)
-    monkeypatch.setattr(cli, "load_tts", load)
+    monkeypatch.setattr(service, "extract_sections", extract)
+    monkeypatch.setattr(service, "load_tts", load)
     result = runner.invoke(app, ["convert", str(source), "-y", *arguments])
     assert result.exit_code != 0
     extract.assert_not_called()
@@ -204,7 +207,7 @@ def test_sample_boundaries(conversion, monkeypatch, format_type):
 
     from simple_tts.audio import Chapter
 
-    cli, source = conversion
+    service, source = conversion
     lengths = iter([24000, 36000, 12000])
     spoken = []
     pcm_paths = []
@@ -222,8 +225,8 @@ def test_sample_boundaries(conversion, monkeypatch, format_type):
         assert not source.with_suffix(".vtt").exists()
         output.write_bytes(b"encoded")
 
-    monkeypatch.setattr(cli, "synthesize", synthesize)
-    monkeypatch.setattr(cli, "encode_pcm", encode)
+    monkeypatch.setattr(service, "synthesize", synthesize)
+    monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(
         app,
         [
@@ -252,7 +255,7 @@ def test_missing_headings_warning(conversion, monkeypatch, arguments):
     """Every conversion reports absent heading matches."""
     import numpy as np
 
-    cli, source = conversion
+    service, source = conversion
     source.write_text("## Different level\n\nBody.")
     titles = []
 
@@ -260,8 +263,8 @@ def test_missing_headings_warning(conversion, monkeypatch, arguments):
         titles.extend(chapter.title for chapter in chapters)
         output.write_bytes(b"encoded")
 
-    monkeypatch.setattr(cli, "synthesize", lambda *args, **kwargs: np.zeros(240))
-    monkeypatch.setattr(cli, "encode_pcm", encode)
+    monkeypatch.setattr(service, "synthesize", lambda *args, **kwargs: np.zeros(240))
+    monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(app, ["convert", str(source), "-y", *arguments])
     assert result.exit_code == 0, result.output
     assert "No headings match" in result.output
@@ -276,13 +279,15 @@ def test_long_conversion_releases_audio_arrays(conversion, monkeypatch):
 
     from simple_tts.converter import ExtractedDocument, Section
 
-    cli, source = conversion
+    service, source = conversion
     references = []
     chunk_count = 300
     monkeypatch.setattr(
-        cli,
+        service,
         "extract_sections",
-        lambda *args: ExtractedDocument([Section("Long", "A" * 1000 * chunk_count)], 1),
+        lambda *args, **kwargs: ExtractedDocument(
+            [Section("Long", "A" * 1000 * chunk_count)], 1
+        ),
     )
 
     def synthesize(*args, **kwargs):
@@ -297,8 +302,8 @@ def test_long_conversion_releases_audio_arrays(conversion, monkeypatch):
         assert chapters[-1].end_sample == chunk_count * 24000
         output.write_bytes(b"encoded")
 
-    monkeypatch.setattr(cli, "synthesize", synthesize)
-    monkeypatch.setattr(cli, "encode_pcm", encode)
+    monkeypatch.setattr(service, "synthesize", synthesize)
+    monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(app, ["convert", str(source), "-y"])
     assert result.exit_code == 0, result.output
     assert len(references) == chunk_count
@@ -309,11 +314,11 @@ def test_failure_cleanup_and_publication(conversion, monkeypatch, failure_stage)
     """Errors and cancellation remove temporary files and preserve old outputs."""
     import numpy as np
 
-    cli, source = conversion
+    service, source = conversion
     output = source.with_suffix(".m4b")
     output.write_bytes(b"old audio")
     directories = []
-    temporary_directory = cli.tempfile.TemporaryDirectory
+    temporary_directory = tempfile.TemporaryDirectory
 
     def track_directory(*args, **kwargs):
         directory = temporary_directory(*args, **kwargs)
@@ -335,9 +340,9 @@ def test_failure_cleanup_and_publication(conversion, monkeypatch, failure_stage)
         staged.write_bytes(b"partial encode")
         raise RuntimeError("encoding error")
 
-    monkeypatch.setattr(cli.tempfile, "TemporaryDirectory", track_directory)
-    monkeypatch.setattr(cli, "synthesize", synthesize)
-    monkeypatch.setattr(cli, "encode_pcm", encode)
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", track_directory)
+    monkeypatch.setattr(service, "synthesize", synthesize)
+    monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(app, ["convert", str(source), "--format", "m4b", "-y"])
     assert result.exit_code != 0
     assert output.read_bytes() == b"old audio"
@@ -350,10 +355,10 @@ def test_no_audio_is_an_error(conversion, monkeypatch):
 
     import numpy as np
 
-    cli, source = conversion
-    monkeypatch.setattr(cli, "synthesize", lambda *args, **kwargs: np.array([]))
+    service, source = conversion
+    monkeypatch.setattr(service, "synthesize", lambda *args, **kwargs: np.array([]))
     encode = Mock()
-    monkeypatch.setattr(cli, "encode_pcm", encode)
+    monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(app, ["convert", str(source), "-y"])
     assert result.exit_code == 1
     assert "Synthesis produced no audio" in result.output
@@ -420,11 +425,11 @@ def test_voice_rotation_reuses_one_pipeline(conversion, monkeypatch):
 
     from simple_tts.converter import ExtractedDocument, Section
 
-    cli, source = conversion
+    service, source = conversion
     document = ExtractedDocument(
         [Section(title, "A" * 2000) for title in ["Introduction", "First", "Last"]], 2
     )
-    monkeypatch.setattr(cli, "extract_sections", lambda *args: document)
+    monkeypatch.setattr(service, "extract_sections", lambda *args, **kwargs: document)
     loaded = []
     spoken = []
     engine = object()
@@ -438,9 +443,11 @@ def test_voice_rotation_reuses_one_pipeline(conversion, monkeypatch):
         spoken.append(voice)
         return np.zeros(240, dtype=np.float32)
 
-    monkeypatch.setattr(cli, "load_tts", load)
-    monkeypatch.setattr(cli, "synthesize", synthesize)
-    monkeypatch.setattr(cli, "encode_pcm", lambda pcm, output, *args: output.touch())
+    monkeypatch.setattr(service, "load_tts", load)
+    monkeypatch.setattr(service, "synthesize", synthesize)
+    monkeypatch.setattr(
+        service, "encode_pcm", lambda pcm, output, *args: output.touch()
+    )
     result = runner.invoke(
         app, ["convert", str(source), "--voice", " af_bella, am_adam ", "-y"]
     )
@@ -453,11 +460,11 @@ def test_output_directory_collision_precedes_synthesis(conversion, monkeypatch):
     """Output paths cannot use an existing directory."""
     from unittest.mock import Mock
 
-    cli, source = conversion
+    service, source = conversion
     output = source.with_suffix(".m4a")
     output.mkdir()
     load = Mock()
-    monkeypatch.setattr(cli, "load_tts", load)
+    monkeypatch.setattr(service, "load_tts", load)
     result = runner.invoke(app, ["convert", str(source), "-o", str(output), "-y"])
     assert result.exit_code == 1
     load.assert_not_called()
@@ -468,9 +475,9 @@ def test_confirmation_lists_each_narrator(conversion, monkeypatch):
     """The checkpoint identifies every narrator before conversion starts."""
     import numpy as np
 
-    cli, source = conversion
-    monkeypatch.setattr(cli, "synthesize", lambda *args, **kwargs: np.zeros(240))
-    monkeypatch.setattr(cli, "encode_pcm", lambda pcm, path, *args: path.touch())
+    service, source = conversion
+    monkeypatch.setattr(service, "synthesize", lambda *args, **kwargs: np.zeros(240))
+    monkeypatch.setattr(service, "encode_pcm", lambda pcm, path, *args: path.touch())
     result = runner.invoke(
         app, ["convert", str(source), "--voice", "af_bella,am_adam"], input="\n"
     )
@@ -486,9 +493,9 @@ def test_vorbis_is_rejected_before_extraction(conversion, monkeypatch, arguments
     """Removed formats fail before extraction or model loading."""
     from unittest.mock import Mock
 
-    cli, source = conversion
+    service, source = conversion
     extract = Mock()
-    monkeypatch.setattr(cli, "extract_sections", extract)
+    monkeypatch.setattr(service, "extract_sections", extract)
     result = runner.invoke(app, ["convert", str(source), "-y", *arguments])
     assert result.exit_code == 1
     assert "Unsupported" in result.output
@@ -500,9 +507,9 @@ def test_install_deps_exit_status(monkeypatch, success):
     """The installer command returns the installation result as its exit status."""
     from unittest.mock import Mock
 
+    install = Mock(return_value=success)
     from simple_tts import cli
 
-    install = Mock(return_value=success)
     monkeypatch.setattr(cli, "install_dependencies_brew", install)
     result = runner.invoke(app, ["install-deps", "--brew"])
     assert result.exit_code == (0 if success else 1)
@@ -521,10 +528,10 @@ def test_empty_input_stops_before_model_loading(conversion, monkeypatch):
     """An empty document reports a useful error without loading a model."""
     from unittest.mock import Mock
 
-    cli, source = conversion
+    service, source = conversion
     source.write_text("")
     load = Mock()
-    monkeypatch.setattr(cli, "load_tts", load)
+    monkeypatch.setattr(service, "load_tts", load)
     result = runner.invoke(app, ["convert", str(source), "-y"])
     assert result.exit_code == 1
     assert "no narration text" in result.output
@@ -535,9 +542,9 @@ def test_missing_output_directory_stops_before_extraction(conversion, monkeypatc
     """Invalid output directories fail before document extraction."""
     from unittest.mock import Mock
 
-    cli, source = conversion
+    service, source = conversion
     extract = Mock()
-    monkeypatch.setattr(cli, "extract_sections", extract)
+    monkeypatch.setattr(service, "extract_sections", extract)
     result = runner.invoke(
         app,
         [
@@ -551,3 +558,61 @@ def test_missing_output_directory_stops_before_extraction(conversion, monkeypatc
     assert result.exit_code == 1
     assert "Output directory does not exist" in result.output
     extract.assert_not_called()
+
+
+def test_cli_without_mcp_extra(tmp_path):
+    """The CLI converts files without FastMCP and explains how to install it."""
+    import subprocess
+    import sys
+
+    script = """
+import importlib.abc
+import sys
+from pathlib import Path
+class BlockMCP(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, *args):
+        if fullname.split('.')[0] in {'fastmcp', 'anyio'}:
+            raise ModuleNotFoundError(fullname)
+sys.meta_path.insert(0, BlockMCP())
+import numpy as np
+from typer.testing import CliRunner
+from simple_tts.cli import app
+from simple_tts import service
+assert 'fastmcp' not in sys.modules
+runner = CliRunner()
+assert runner.invoke(app, ['version']).exit_code == 0
+source = Path(sys.argv[1]) / 'input.md'
+source.write_text('Hello.')
+service.load_tts = lambda *args, **kwargs: object()
+service.synthesize = lambda *args, **kwargs: np.zeros(2400, dtype=np.float32)
+converted = runner.invoke(app, ['convert', str(source), '-y'])
+assert converted.exit_code == 0, converted.output
+assert source.with_suffix('.m4a').exists()
+missing = runner.invoke(app, ['mcp', '--workspace', str(source.parent)])
+assert missing.exit_code == 1
+assert missing.stdout == ''
+assert 'pip install "simple-tts[mcp]"' in missing.stderr
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_mcp_windows_startup_error_uses_only_stderr(tmp_path, monkeypatch):
+    """Windows gets a useful MCP startup error while ordinary commands still work."""
+    from simple_tts import jobs
+
+    monkeypatch.setattr(jobs.sys, "platform", "win32")
+    result = runner.invoke(app, ["mcp", "--workspace", str(tmp_path)])
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    stderr = " ".join(result.stderr.split())
+    assert "requires POSIX support" in stderr
+    assert "Windows is not supported" in stderr
+    assert "simple-tts convert" in stderr
+    assert "Traceback" not in result.stderr
+    assert runner.invoke(app, ["version"]).exit_code == 0
