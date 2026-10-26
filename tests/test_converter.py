@@ -1,5 +1,6 @@
 """Tests for the converter module."""
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from simple_tts.converter import (
         ("para1\n\npara2", "para1\n\npara2"),
         ("", ""),
         ("   ", ""),
+        ("exam\u00adple", "example"),
     ],
 )
 def test_normalize_text(text, expected):
@@ -295,3 +297,37 @@ def test_empty_document_has_no_sections(tmp_path):
     source = tmp_path / "empty.md"
     source.write_text("\n\n ")
     assert extract_sections(source).sections == []
+
+
+@pytest.mark.parametrize(
+    ("markdown", "expected"),
+    [
+        ("Read https://example.com/paper now.", "Read now."),
+        ("Read the notes at https://example.com/notes.", "Read the notes at."),
+        ("Read https://example.com/a, then stop.", "Read, then stop."),
+        ("He wrote “see https://example.com/q”.", "He wrote “see”."),
+        ("See <https://example.com/autolink> for details.", "See for details."),
+        ("Read [the label](https://example.com/label) now.", "Read the label now."),
+        ("The exam\u00adple text.", "The example text."),
+    ],
+)
+def test_narration_skips_urls_and_soft_hyphens(tmp_path, markdown, expected):
+    """Speech omits URLs and soft hyphens but keeps link labels and punctuation."""
+    source = tmp_path / "notes.md"
+    source.write_text(markdown, encoding="utf-8")
+    result = extract_sections(source)
+    assert [section.text for section in result.sections] == [expected]
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="Pandoc is not installed.")
+def test_page_markers_are_not_spoken(tmp_path):
+    """Pandoc drops the HTML comments that pdf2md writes as page markers."""
+    source = tmp_path / "paper.md"
+    source.write_text(
+        "<!-- pdf-page: 1 -->\n\nBody text.\n\n"
+        "<!-- pdf-page: 2; half: left -->\n\nMore text.\n",
+        encoding="utf-8",
+    )
+    result = extract_sections(source)
+    texts = [section.text for section in result.sections]
+    assert texts == ["Body text.\n\nMore text."]
