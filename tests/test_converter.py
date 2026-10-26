@@ -52,9 +52,86 @@ class TestSplitIntoChunks:
         assert chunks == ["First sentence. Second sentence.", "Third sentence."]
 
     def test_handles_empty_text(self):
-        """Test handling of empty text."""
-        chunks = split_into_chunks("")
-        assert chunks == [""]
+        """Empty text produces no chunks."""
+        assert split_into_chunks("") == []
+
+    def test_blank_lines_preserve_paragraph_boundaries(self):
+        """A paragraph without final punctuation is not merged into a sentence."""
+        text = "One two three\n\nfour five six."
+        assert split_into_chunks(text, max_chunk_size=20) == [
+            "One two three",
+            "four five six.",
+        ]
+
+    def test_whitespace_split_precedes_token_cut(self):
+        """A long token is cut only when it has no earlier split point."""
+        text = "prefix " + "A" * 50 + " suffix"
+        assert split_into_chunks(text, max_chunk_size=25) == [
+            "prefix",
+            "A" * 25,
+            "A" * 25,
+            "suffix",
+        ]
+
+
+@pytest.mark.parametrize("marker", [".", "?", "!", "…"])
+def test_terminal_punctuation_ends_a_sentence(marker):
+    """Every supported mark ends a sentence before the limit is reached."""
+    assert split_into_chunks(f"Wait{marker} Then go.", max_chunk_size=10) == [
+        f"Wait{marker}",
+        "Then go.",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('"Stop!" Now go.', ['"Stop!"', "Now go."]),
+        ("(Yes!) Now go.", ["(Yes!)", "Now go."]),
+        ("«Oui!» On y va.", ["«Oui!»", "On y va."]),
+    ],
+)
+def test_closing_quotes_and_brackets_stay_with_sentence(text, expected):
+    """Closing marks belong to the sentence they follow."""
+    assert split_into_chunks(text, max_chunk_size=12) == expected
+
+
+def test_long_sentence_prefers_comma_boundaries():
+    """An oversized sentence splits at commas before whitespace."""
+    text = "One two three, four five six seven eight nine ten."
+    assert split_into_chunks(text, max_chunk_size=20) == [
+        "One two three,",
+        "four five six seven",
+        "eight nine ten.",
+    ]
+
+
+def test_spaced_closing_guillemet_stays_with_sentence():
+    """French spacing before a closing guillemet keeps it in the sentence."""
+    text = "« Partez. » Puis il partit."
+    assert split_into_chunks(text, max_chunk_size=16) == [
+        "« Partez. »",
+        "Puis il partit.",
+    ]
+
+
+NARRATION_FIXTURES = sorted(
+    (Path(__file__).parent / "fixtures" / "narration").glob("*.md")
+)
+
+
+@pytest.mark.parametrize("fixture", NARRATION_FIXTURES, ids=lambda path: path.stem)
+@pytest.mark.parametrize("max_chunk_size", [200, 400, 1000])
+def test_narration_fixtures_preserve_words(fixture, max_chunk_size):
+    """Every fixture keeps every word once, in order, within the limit."""
+    text = fixture.read_text(encoding="utf-8")
+    chunks = split_into_chunks(text, max_chunk_size)
+    assert " ".join(chunks).split() == text.split()
+    assert chunks
+    for chunk in chunks:
+        assert chunk
+        assert chunk == chunk.strip()
+        assert len(chunk) <= max_chunk_size
 
 
 def test_plain_text_input(tmp_path):
