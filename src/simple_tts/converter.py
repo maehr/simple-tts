@@ -79,6 +79,15 @@ def extract_sections(
     def narration(text: str) -> str:
         # Keep link labels and inline text without Markdown delimiters.
         text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)
+        # Remove autolinks and bare URLs with the space before them.
+        # Keep punctuation that follows a bare URL.
+        text = re.sub(r"[ \t]*<https?://[^>\s]*>", "", text, flags=re.IGNORECASE)
+        text = re.sub(
+            r'[ \t]*https?://\S*?(?=[.,;:!?)\]”’»"]*(?:\s|$))',
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
         text = re.sub(r"`+([^`]+)`+", r"\1", text)
         text = re.sub(r"(?<![\w\\])([*_]{1,3})(\S(?:.*?\S)?)\1(?!\w)", r"\2", text)
         text = re.sub(r"\\([!\"#$%&'()*+,./:;<=>?@\[\\\]^{|}~_-])", r"\1", text)
@@ -107,10 +116,10 @@ def extract_sections(
 
 
 def normalize_text(text: str) -> str:
-    r"""Normalize text by removing excess whitespace.
+    r"""Normalize text by removing soft hyphens and excess whitespace.
 
-    Removes leading/trailing whitespace and collapses multiple spaces
-    into single spaces. Preserves paragraph structure (double newlines).
+    Removes soft hyphens, leading/trailing whitespace, and collapses multiple
+    spaces into single spaces. Preserves paragraph structure (double newlines).
 
     Args:
         text: The text to normalize.
@@ -126,6 +135,9 @@ def normalize_text(text: str) -> str:
         >>> normalize_text("  Multiple   spaces   here  ")
         'Multiple spaces here'
     """
+    # Soft hyphens only mark optional line breaks. Speech must not read them.
+    text = text.replace("\u00ad", "")
+
     # Split into paragraphs (preserve double newlines)
     paragraphs = text.split("\n\n")
 

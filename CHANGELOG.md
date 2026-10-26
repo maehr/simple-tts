@@ -41,6 +41,7 @@ Issues: [#7](https://github.com/maehr/simple-tts/issues/7) and [#9](https://gith
 - MCP extraction uses Pandoc's sandbox to block secondary file reads from includes and embedded frames.
 - MCP startup rejects Windows with a clear error before it accesses workspace files or starts workers.
 - The MCP guide states the platform requirements and Pandoc sandbox requirements.
+- Narration skips URLs, autolinks, and soft hyphens. Link labels remain spoken.
 
 ## 0.2.0 - 2026-10-24
 
