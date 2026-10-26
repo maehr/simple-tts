@@ -121,7 +121,7 @@ NARRATION_FIXTURES = sorted(
 
 
 @pytest.mark.parametrize("fixture", NARRATION_FIXTURES, ids=lambda path: path.stem)
-@pytest.mark.parametrize("max_chunk_size", [200, 400, 1000])
+@pytest.mark.parametrize("max_chunk_size", [200, 400, 600, 1000])
 def test_narration_fixtures_preserve_words(fixture, max_chunk_size):
     """Every fixture keeps every word once, in order, within the limit."""
     text = fixture.read_text(encoding="utf-8")
