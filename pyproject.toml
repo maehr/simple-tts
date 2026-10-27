@@ -67,6 +67,9 @@ convention = "google"
 testpaths = ["tests"]
 addopts = "--doctest-modules --cov=simple_tts --cov-report=term-missing"
 pythonpath = ["src"]
+markers = [
+    "model: real Phonon model tests, skipped unless SIMPLE_TTS_MODEL_TESTS=1",
+]
 
 [tool.coverage.run]
 source = ["src/simple_tts"]

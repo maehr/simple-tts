@@ -262,7 +262,7 @@ def test_stream_rejects_multichannel_audio(ptts):
 @pytest.mark.parametrize(
     ("error", "message"),
     [
-        (LookupError("no voice 'af_bella' is registered"), "no voice 'af_bella'"),
+        (LookupError("no voice 'Hadley' is registered"), "no voice 'Hadley'"),
         (OSError("cannot fetch `voices/x.safetensors`"), "Connect to the internet"),
     ],
 )
@@ -271,7 +271,7 @@ def test_voice_errors_are_explained(ptts, error, message):
     model = tts.load_tts(language="en", report=Mock())
     model.stream = Mock(side_effect=error)
     with pytest.raises(RuntimeError, match=message):
-        with tts.stream_speech(model, "Hello.", voice="af_bella"):
+        with tts.stream_speech(model, "Hello.", voice="Hadley"):
             pass
 
 

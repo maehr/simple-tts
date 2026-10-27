@@ -1,5 +1,6 @@
+import os
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
@@ -7,6 +8,9 @@ import pytest
 
 from simple_tts import tts
 
+# Real model tests are opt-in. They need the gated model in the Hub cache.
+MODEL_TESTS = "SIMPLE_TTS_MODEL_TESTS"
+REAL_PTTS = pytest.StashKey[ModuleType | None]()
 DISPLAY_DEVICES = {"cpu": "cpu", "metal": "Metal (Test GPU)", "cuda": "CUDA (Test GPU)"}
 
 
@@ -90,9 +94,42 @@ def fake_ptts():
     )
 
 
+def model_tests_enabled():
+    """Return whether the opt-in real model tests run."""
+    return os.environ.get(MODEL_TESTS) == "1"
+
+
 def pytest_configure(config):
-    """Prevent model downloads during tests and doctests."""
+    """Prevent model downloads during tests and doctests.
+
+    Only an opt-in model test run keeps the real ptts module for model tests.
+    """
+    if model_tests_enabled():
+        try:
+            import ptts as real
+        except ImportError:
+            real = None
+        config.stash[REAL_PTTS] = real
     sys.modules["ptts"] = fake_ptts()
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip the model tests unless SIMPLE_TTS_MODEL_TESTS is 1."""
+    if model_tests_enabled():
+        return
+    skip = pytest.mark.skip(reason=f"Set {MODEL_TESTS}=1 to run real model tests.")
+    for item in items:
+        if item.get_closest_marker("model"):
+            item.add_marker(skip)
+
+
+@pytest.fixture(scope="session")
+def real_ptts(pytestconfig):
+    """Return the real ptts module for the model tests."""
+    module = pytestconfig.stash.get(REAL_PTTS, None)
+    if module is None:
+        pytest.skip("The real ptts module is not installed.")
+    return module
 
 
 @pytest.fixture(scope="session")
@@ -102,8 +139,15 @@ def empty_hub(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
-def ptts(monkeypatch, empty_hub):
-    """Replace ptts and the model source settings in every test."""
+def ptts(request, monkeypatch, empty_hub):
+    """Replace ptts and the model source settings in every test.
+
+    Model tests get the real ptts module and keep the real Hub cache.
+    """
+    if request.node.get_closest_marker("model"):
+        module = request.getfixturevalue("real_ptts")
+        monkeypatch.setitem(sys.modules, "ptts", module)
+        return module
     module = fake_ptts()
     monkeypatch.setitem(sys.modules, "ptts", module)
     monkeypatch.delenv("SIMPLE_TTS_MODEL", raising=False)
