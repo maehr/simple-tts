@@ -674,9 +674,9 @@ The developer did these evaluations.
 They are not independent tests.
 They do not show that every Phonon voice is better for long narration.
 
-A human listening review is still pending.
+The 0.4.0 release did not include a human listening review.
+This review is still open.
 It covers a native voice in each language, 8-bit compared to f32 weights, and Kokoro in English, French, and Spanish.
-The 0.4.0 release requires this review.
 
 [Parler-TTS Mini Multilingual v1.1](https://huggingface.co/parler-tts/parler-tts-mini-multilingual-v1.1) is a possible alternative.
 Its weights use the Apache 2.0 license.

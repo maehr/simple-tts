@@ -2,7 +2,7 @@
 
 Version numbers follow the [versioning policy](README.md#versioning).
 
-## 0.4.0 - Unreleased
+## 0.4.0 - 2026-10-27
 
 ### Breaking changes
 
@@ -60,7 +60,7 @@ Version numbers follow the [versioning policy](README.md#versioning).
 - The README install commands and the MCP install hint use the git tag, for example `v0.4.0`, because simple-tts is not on PyPI.
 - A missing `ptts` package gives the message `ptts is missing. Reinstall simple-tts.`
 
-## 0.3.0 - Unreleased
+## 0.3.0 - 2026-10-27
 
 Issues: [#7](https://github.com/maehr/simple-tts/issues/7) and [#9](https://github.com/maehr/simple-tts/issues/9).
 
