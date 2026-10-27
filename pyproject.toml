@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "simple-tts"
-version = "0.3.0"
-description = "A simple text-to-speech CLI using Kokoro TTS"
+version = "0.4.0"
+description = "A simple text-to-speech CLI using Phonon 40M Multilingual"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
