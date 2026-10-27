@@ -28,8 +28,7 @@ dependencies = [
     "rich>=13.0.0",
     "numpy>=1.24.0",
     "soundfile>=0.12.0",
-    "kokoro>=0.9.4",
-    "torch>=2.2.0",
+    "ptts==0.4.2",
 ]
 
 [project.optional-dependencies]
@@ -43,10 +42,6 @@ dev = [
 
 [project.scripts]
 simple-tts = "simple_tts.cli:app"
-
-[tool.uv]
-# curated-tokenizers 0.0.9 fails to compile with newer Cython releases.
-build-constraint-dependencies = ["cython<3.2"]
 
 [tool.ruff]
 line-length = 88

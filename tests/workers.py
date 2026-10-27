@@ -5,6 +5,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 
 import numpy as np
 
@@ -13,19 +14,29 @@ from simple_tts.jobs import conversion_worker
 from simple_tts.processes import run_command
 
 
+def one_frame(synthesize):
+    """Stream the array that ``synthesize(model, text, voice)`` returns."""
+
+    @contextmanager
+    def stream(model, text, *, voice):
+        yield iter([synthesize(model, text, voice)])
+
+    return stream
+
+
 def mock_worker(request, workspace, scratch, staged, cancelled, sender):
     """Use real extraction and encoding with deterministic synthesis."""
 
-    def load(voice, device, report):
+    def load(*, language, device, report):
         print("Worker diagnostic", flush=True)
         report(f"Device: {device}")
         return object()
 
-    def synthesize(pipeline, text, voice, speed):
+    def synthesize(model, text, voice):
         return np.full(2400, 0.1 if voice == "af_bella" else 0.2, dtype=np.float32)
 
     service.load_tts = load
-    service.synthesize = synthesize
+    service.stream_speech = one_frame(synthesize)
     conversion_worker(request, workspace, scratch, staged, cancelled, sender)
 
 
@@ -48,15 +59,19 @@ def crashing_worker(request, workspace, scratch, staged, cancelled, sender):
 
 
 def slow_worker(request, workspace, scratch, staged, cancelled, sender):
-    """Wait inside synthesis until cancellation is requested."""
-    service.load_tts = lambda *args, **kwargs: object()
+    """Stream frames without end, so only cancellation can stop synthesis."""
+    service.load_tts = lambda **kwargs: object()
 
-    def synthesize(*args, **kwargs):
-        while not cancelled.is_set():
+    def frames():
+        while True:
             time.sleep(0.01)
-        return np.zeros(2400, dtype=np.float32)
+            yield np.zeros(240, dtype=np.float32)
 
-    service.synthesize = synthesize
+    @contextmanager
+    def stream(*args, **kwargs):
+        yield frames()
+
+    service.stream_speech = stream
     conversion_worker(request, workspace, scratch, staged, cancelled, sender)
 
 

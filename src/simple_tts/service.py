@@ -15,8 +15,8 @@ from simple_tts.converter import (
     validate_input,
 )
 from simple_tts.dependencies import get_missing_dependencies
-from simple_tts.tts import DEVICES, SAMPLE_RATE, load_tts, synthesize
-from simple_tts.voices import VOICES
+from simple_tts.tts import DEVICES, SAMPLE_RATE, load_tts, stream_speech
+from simple_tts.voices import DEFAULT_LANGUAGE, VOICES
 
 Phase = Literal[
     "extracting", "loading", "synthesizing", "encoding", "publishing", "done"
@@ -206,14 +206,15 @@ def execute_conversion(
     report: Callable[[ProgressEvent], None] = _ignore_event,
     check_cancelled: Callable[[], None] = _no_cancellation,
 ) -> ConversionResult:
-    """Write bounded PCM chunks and encode once without publishing a file."""
+    """Write streamed PCM frames and encode once without publishing a file."""
     request = prepared.request
     total = sum(len(chunks) for _, chunks in prepared.sections)
     completed = 0
     check_cancelled()
     report(ProgressEvent("loading", total_chunks=total))
-    pipeline = load_tts(
-        request.voices[0],
+    # One model serves every chapter voice of the conversion.
+    model = load_tts(
+        language=DEFAULT_LANGUAGE,
         device=request.device,
         report=lambda message: report(ProgressEvent("loading", 0, total, message)),
     )
@@ -228,10 +229,10 @@ def execute_conversion(
             start = writer.samples
             for chunk in chunks:
                 check_cancelled()
-                audio = synthesize(pipeline, chunk, voice=voice, speed=request.speed)
-                check_cancelled()
-                writer.write(audio)
-                del audio
+                with stream_speech(model, chunk, voice=voice) as frames:
+                    for frame in frames:
+                        writer.write(frame)
+                        check_cancelled()
                 completed += 1
                 report(ProgressEvent("synthesizing", completed, total))
             if writer.samples > start:

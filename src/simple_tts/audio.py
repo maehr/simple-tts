@@ -32,7 +32,7 @@ CODECS = {
 
 @dataclass(frozen=True)
 class Chapter:
-    """Chapter bounds in samples at the Kokoro sample rate."""
+    """Chapter bounds in samples at the synthesis sample rate."""
 
     title: str
     start_sample: int

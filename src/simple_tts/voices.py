@@ -9,6 +9,22 @@ Example:
     {'language': 'English (US)', 'description': 'American female voice'}
 """
 
+# Narration languages of Phonon 40M Multilingual, one per conversion.
+LANGUAGES: dict[str, str] = {
+    "en": "English",
+    "de": "German",
+    "es": "Spanish",
+    "fr": "French",
+}
+DEFAULT_LANGUAGE = "en"
+# Catalog voices per language. Provisional until a listening review confirms them.
+DEFAULT_VOICES: dict[str, str] = {
+    "en": "Zoey",
+    "de": "Nele",
+    "es": "Noa",
+    "fr": "Noémie",
+}
+
 # Available voices from Kokoro TTS
 # Voice ID format: {lang_code}{gender}_{name}
 # Lang codes: a=American, b=British, e=Spanish, f=French, h=Hindi,

@@ -207,7 +207,7 @@ def test_worker_failure_is_status_data(tmp_path):
 
 
 def test_stdio_startup_has_only_protocol_stdout(tmp_path):
-    """A real stdio process starts without importing Torch or printing banners."""
+    """A real stdio process starts without importing ptts or printing banners."""
 
     async def scenario():
         from fastmcp.client.transports import StdioTransport
@@ -218,7 +218,7 @@ import importlib.abc
 import sys
 class BlockModels(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, *args):
-        if fullname.split('.')[0] in {'torch', 'kokoro'}:
+        if fullname.split('.')[0] == 'ptts':
             raise RuntimeError('Model import during startup')
 sys.meta_path.insert(0, BlockModels())
 from simple_tts.cli import app

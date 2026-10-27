@@ -8,6 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from simple_tts.cli import app, format_duration
+from tests.workers import one_frame
 
 runner = CliRunner()
 
@@ -156,7 +157,9 @@ def test_output_format_resolution(
         assert output.parent.parent == source.parent
         output.write_bytes(b"encoded")
 
-    monkeypatch.setattr(service, "synthesize", lambda *args, **kwargs: np.zeros(240))
+    monkeypatch.setattr(
+        service, "stream_speech", one_frame(lambda *args: np.zeros(240))
+    )
     monkeypatch.setattr(service, "encode_pcm", encode)
     arguments = list(arguments)
     if "--output" in arguments:
@@ -213,7 +216,7 @@ def test_sample_boundaries(conversion, monkeypatch, format_type):
     pcm_paths = []
     chapters_seen = []
 
-    def synthesize(pipeline, text, **kwargs):
+    def synthesize(model, text, voice):
         spoken.append(text)
         return np.full(next(lengths), len(spoken), dtype=np.float32)
 
@@ -225,7 +228,7 @@ def test_sample_boundaries(conversion, monkeypatch, format_type):
         assert not source.with_suffix(".vtt").exists()
         output.write_bytes(b"encoded")
 
-    monkeypatch.setattr(service, "synthesize", synthesize)
+    monkeypatch.setattr(service, "stream_speech", one_frame(synthesize))
     monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(
         app,
@@ -263,7 +266,9 @@ def test_missing_headings_warning(conversion, monkeypatch, arguments):
         titles.extend(chapter.title for chapter in chapters)
         output.write_bytes(b"encoded")
 
-    monkeypatch.setattr(service, "synthesize", lambda *args, **kwargs: np.zeros(240))
+    monkeypatch.setattr(
+        service, "stream_speech", one_frame(lambda *args: np.zeros(240))
+    )
     monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(app, ["convert", str(source), "-y", *arguments])
     assert result.exit_code == 0, result.output
@@ -272,7 +277,7 @@ def test_missing_headings_warning(conversion, monkeypatch, arguments):
 
 
 def test_long_conversion_releases_audio_arrays(conversion, monkeypatch):
-    """Hundreds of chunks never retain earlier audio arrays."""
+    """Hundreds of chunks retain at most the last written frame."""
     import weakref
 
     import numpy as np
@@ -290,19 +295,22 @@ def test_long_conversion_releases_audio_arrays(conversion, monkeypatch):
         ),
     )
 
-    def synthesize(*args, **kwargs):
-        assert all(reference() is None for reference in references)
+    def live_frames():
+        return sum(reference() is not None for reference in references)
+
+    def synthesize(*args):
+        assert live_frames() <= 1
         audio = np.zeros(24000, dtype=np.float32)
         references.append(weakref.ref(audio))
         return audio
 
     def encode(pcm, output, format_type, chapters):
-        assert all(reference() is None for reference in references)
+        assert live_frames() <= 1
         assert pcm.stat().st_size == chunk_count * 24000 * 4
         assert chapters[-1].end_sample == chunk_count * 24000
         output.write_bytes(b"encoded")
 
-    monkeypatch.setattr(service, "synthesize", synthesize)
+    monkeypatch.setattr(service, "stream_speech", one_frame(synthesize))
     monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(app, ["convert", str(source), "-y"])
     assert result.exit_code == 0, result.output
@@ -327,7 +335,7 @@ def test_failure_cleanup_and_publication(conversion, monkeypatch, failure_stage)
 
     calls = 0
 
-    def synthesize(*args, **kwargs):
+    def synthesize(*args):
         nonlocal calls
         calls += 1
         if calls == 2 and failure_stage == "cancellation":
@@ -341,7 +349,7 @@ def test_failure_cleanup_and_publication(conversion, monkeypatch, failure_stage)
         raise RuntimeError("encoding error")
 
     monkeypatch.setattr(tempfile, "TemporaryDirectory", track_directory)
-    monkeypatch.setattr(service, "synthesize", synthesize)
+    monkeypatch.setattr(service, "stream_speech", one_frame(synthesize))
     monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(app, ["convert", str(source), "--format", "m4b", "-y"])
     assert result.exit_code != 0
@@ -356,7 +364,7 @@ def test_no_audio_is_an_error(conversion, monkeypatch):
     import numpy as np
 
     service, source = conversion
-    monkeypatch.setattr(service, "synthesize", lambda *args, **kwargs: np.array([]))
+    monkeypatch.setattr(service, "stream_speech", one_frame(lambda *args: np.array([])))
     encode = Mock()
     monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(app, ["convert", str(source), "-y"])
@@ -419,7 +427,7 @@ def test_real_cli_embedded_chapters(tmp_path, format_type):
     assert {path.name for path in tmp_path.iterdir()} == {source.name, output.name}
 
 
-def test_voice_rotation_reuses_one_pipeline(conversion, monkeypatch):
+def test_voice_rotation_reuses_one_model(conversion, monkeypatch):
     """Every section retains one voice across chunks and cycles in order."""
     import numpy as np
 
@@ -434,17 +442,17 @@ def test_voice_rotation_reuses_one_pipeline(conversion, monkeypatch):
     spoken = []
     engine = object()
 
-    def load(voice, **kwargs):
-        loaded.append(voice)
+    def load(*, language, device, report):
+        loaded.append(language)
         return engine
 
-    def synthesize(pipeline, text, voice, speed):
-        assert pipeline is engine
+    def synthesize(model, text, voice):
+        assert model is engine
         spoken.append(voice)
         return np.zeros(240, dtype=np.float32)
 
     monkeypatch.setattr(service, "load_tts", load)
-    monkeypatch.setattr(service, "synthesize", synthesize)
+    monkeypatch.setattr(service, "stream_speech", one_frame(synthesize))
     monkeypatch.setattr(
         service, "encode_pcm", lambda pcm, output, *args: output.touch()
     )
@@ -452,7 +460,7 @@ def test_voice_rotation_reuses_one_pipeline(conversion, monkeypatch):
         app, ["convert", str(source), "--voice", " af_bella, am_adam ", "-y"]
     )
     assert result.exit_code == 0, result.output
-    assert loaded == ["af_bella"]
+    assert loaded == ["en"]
     assert spoken == ["af_bella"] * 2 + ["am_adam"] * 2 + ["af_bella"] * 2
 
 
@@ -476,7 +484,9 @@ def test_confirmation_lists_each_narrator(conversion, monkeypatch):
     import numpy as np
 
     service, source = conversion
-    monkeypatch.setattr(service, "synthesize", lambda *args, **kwargs: np.zeros(240))
+    monkeypatch.setattr(
+        service, "stream_speech", one_frame(lambda *args: np.zeros(240))
+    )
     monkeypatch.setattr(service, "encode_pcm", lambda pcm, path, *args: path.touch())
     result = runner.invoke(
         app, ["convert", str(source), "--voice", "af_bella,am_adam"], input="\n"
@@ -583,8 +593,12 @@ runner = CliRunner()
 assert runner.invoke(app, ['version']).exit_code == 0
 source = Path(sys.argv[1]) / 'input.md'
 source.write_text('Hello.')
-service.load_tts = lambda *args, **kwargs: object()
-service.synthesize = lambda *args, **kwargs: np.zeros(2400, dtype=np.float32)
+from contextlib import contextmanager
+@contextmanager
+def stream(*args, **kwargs):
+    yield iter([np.zeros(2400, dtype=np.float32)])
+service.load_tts = lambda **kwargs: object()
+service.stream_speech = stream
 converted = runner.invoke(app, ['convert', str(source), '-y'])
 assert converted.exit_code == 0, converted.output
 assert source.with_suffix('.m4a').exists()
