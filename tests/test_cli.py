@@ -275,8 +275,17 @@ def test_rejected_options_precede_synthesis(conversion, monkeypatch, arguments):
 @pytest.mark.parametrize(
     ("arguments", "message"),
     [
-        (["--voice", "Zoey", "--language", "de"], "'Zoey' is English (en)"),
-        (["--voice", "Unknown"], "Unknown voice 'Unknown'"),
+        (
+            ["--voice", "Zoey", "--language", "de"],
+            "Voice 'Zoey' is English (en), but the narration language is German "
+            "(de). List German voices with 'simple-tts voices --language de' or "
+            "the MCP tool list_voices.",
+        ),
+        (
+            ["--voice", "Unknown"],
+            "Unknown voice 'Unknown'. List English voices with "
+            "'simple-tts voices --language en' or the MCP tool list_voices.",
+        ),
         (
             ["-l", "de", "-v", "Nele,Anton"],
             "Voice 'Nele,Anton' contains a comma. Each conversion uses one voice. "

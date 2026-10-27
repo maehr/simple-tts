@@ -308,6 +308,8 @@ def test_voice_errors_are_job_status_data(tmp_path, ptts, arguments, message):
             status = await run_job(client, manager, {"text": "Hello.", **arguments})
             assert status["state"] == "failed"
             assert message in status["error"]
+            # An MCP client learns the tool that lists the voices.
+            assert "or the MCP tool list_voices." in status["error"]
             assert status["result"] is None
         assert_clean(tmp_path)
 

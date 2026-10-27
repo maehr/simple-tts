@@ -240,7 +240,8 @@ A voice ID must match exactly. For example, `-l fr -v FXxJ9mANRq6BCTX5` selects 
 The voice must speak the narration language.
 simple-tts never replaces a voice with a voice of a different language.
 For example, `-l de -v Zoey` fails before extraction.
-The error names both languages and the command that lists the German voices.
+The error names both languages.
+It also names the CLI command and the MCP tool that list the German voices.
 A value with a comma, such as `-v Nele,Anton`, also fails before extraction.
 
 The catalogue also contains Portuguese voices.
@@ -418,8 +419,9 @@ simple-tts check-deps
 | `Phonon cannot read the voice catalogue: ...` | The catalogue is not in the cache. Connect to the network and run `simple-tts voices`. |
 | `Phonon cannot download a required file: ...` | A model file or a voice is not in the cache. Connect to the network and run the conversion again. |
 | `Phonon cannot find a checkpoint or voice: ...` | Make sure that `SIMPLE_TTS_MODEL` points to a complete checkpoint folder. |
-| `Unknown voice '...'. List voices with: simple-tts voices --language de` | The catalogue does not contain this name or voice ID. Run the command in the message and select a listed voice. |
-| `Voice 'Zoey' is English (en), but the narration language is German (de).` | Select a voice of the narration language, or change `--language`. |
+| `Unknown voice '...'. List German voices with 'simple-tts voices --language de' or the MCP tool list_voices.` | The catalogue does not contain this name or voice ID. Run the command or call `list_voices`. Then select a listed voice. |
+| `Voice 'Zoey' is English (en), but the narration language is German (de).` | Select a voice of the narration language, or change the language. The message names the command and the MCP tool that list the voices. |
+| `The default German (de) voice 'Nele' is not in the voice catalogue. Select another voice.` | The catalogue does not contain the default voice. Select a listed voice of the narration language. |
 | `Voice 'Nele,Anton' contains a comma. Each conversion uses one voice. Voice rotation is removed.` | Select one voice. Version 0.4.0 removes voice rotation. |
 | `Requested device 'mps' is unavailable in this ptts build.` | The installed `ptts` build does not support this GPU. Use `--device auto`. |
 | `No such option: --speed` | Use `--duration-delta`. See [Change the speaking rate](#change-the-speaking-rate). |

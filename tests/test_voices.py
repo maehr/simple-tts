@@ -187,11 +187,22 @@ def test_names_and_voice_ids_resolve(value):
     assert resolve_voice(value, "fr").name == "Noémie"
 
 
+FRENCH_HINT = (
+    "List French voices with 'simple-tts voices --language fr' "
+    "or the MCP tool list_voices."
+)
+GERMAN_HINT = (
+    "List German voices with 'simple-tts voices --language de' "
+    "or the MCP tool list_voices."
+)
+
+
 @pytest.mark.parametrize("value", ["fxxj9manrq6bctx5", "Unknown", "af_bella"])
 def test_unknown_voices_and_lowercase_ids_are_rejected(value):
     """Lowercase voice IDs fail here first, because ptts rejects them too."""
-    with pytest.raises(ValueError, match=f"Unknown voice '{value}'.*--language fr"):
+    with pytest.raises(ValueError) as raised:
         resolve_voice(value, "fr")
+    assert str(raised.value) == f"Unknown voice '{value}'. {FRENCH_HINT}"
 
 
 @pytest.mark.parametrize(
@@ -204,8 +215,21 @@ def test_unknown_voices_and_lowercase_ids_are_rejected(value):
 )
 def test_language_mismatch_is_rejected(value, language, message):
     """A voice never narrates another language without notice."""
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match=message) as raised:
         resolve_voice(value, language)
+    # The CLI and MCP clients both get a command that lists the right voices.
+    assert f"'simple-tts voices --language {language}'" in str(raised.value)
+    assert str(raised.value).endswith(" or the MCP tool list_voices.")
+
+
+def test_language_mismatch_message_is_complete():
+    """The mismatch error names both languages and both voice lists."""
+    with pytest.raises(ValueError) as raised:
+        resolve_voice("Zoey", "de")
+    assert str(raised.value) == (
+        "Voice 'Zoey' is English (en), but the narration language is "
+        f"German (de). {GERMAN_HINT}"
+    )
 
 
 def test_unknown_language_and_syntax_fail_before_the_catalogue(ptts):
@@ -222,8 +246,13 @@ def test_unknown_language_and_syntax_fail_before_the_catalogue(ptts):
 def test_missing_default_voice_is_an_error():
     """An absent default never falls back to another voice or language."""
     catalog = [Voice("Zoey", "z", "en"), Voice("Nele", "n", "pt")]
-    with pytest.raises(ValueError, match="default German \\(de\\) voice 'Nele'"):
+    with pytest.raises(ValueError) as raised:
         resolve_voice(None, "de", catalog)
+    assert str(raised.value) == (
+        "The default German (de) voice 'Nele' is not in the voice catalogue. "
+        f"Select another voice. {GERMAN_HINT}"
+    )
+    assert "--voice" not in str(raised.value)
 
 
 def test_missing_catalogue_is_an_error(ptts):

@@ -93,6 +93,22 @@ def normalize_name(value: str) -> str:
     return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
 
 
+def voice_list_hint(language: str) -> str:
+    """Return how to list the voices of a language in the CLI and in MCP.
+
+    The CLI shows voice errors, and an MCP job returns them as its error.
+
+    Example:
+        >>> print(voice_list_hint("de"))  # doctest: +NORMALIZE_WHITESPACE
+        List German voices with 'simple-tts voices --language de'
+        or the MCP tool list_voices.
+    """
+    return (
+        f"List {LANGUAGES[language]} voices with "
+        f"'simple-tts voices --language {language}' or the MCP tool list_voices."
+    )
+
+
 def check_voice(value: str) -> None:
     """Reject an empty voice value or a value with a comma.
 
@@ -176,10 +192,7 @@ def find_voice(value: str, language: str, catalog: Sequence[Voice]) -> Voice:
     key = normalize_name(value)
     matches = [voice for voice in catalog if normalize_name(voice.name) == key]
     if not matches:
-        raise ValueError(
-            f"Unknown voice '{value}'. "
-            f"List voices with: simple-tts voices --language {language}"
-        )
+        raise ValueError(f"Unknown voice '{value}'. {voice_list_hint(language)}")
     native = [voice for voice in matches if voice.language == language]
     return (native or matches)[0]
 
@@ -212,14 +225,13 @@ def resolve_voice(
         if not any(voice.name == name and voice.language == code for voice in voices):
             raise ValueError(
                 f"The default {label} voice '{name}' is not in the voice "
-                "catalogue. Select a voice with --voice."
+                f"catalogue. Select another voice. {voice_list_hint(code)}"
             )
     voice = find_voice(name, code, voices)
     if voice.language != code:
         spoken = LANGUAGES.get(voice.language, "an unsupported language")
         raise ValueError(
             f"Voice '{voice.name}' is {spoken} ({voice.language or '?'}), "
-            f"but the narration language is {label}. List {LANGUAGES[code]} "
-            f"voices with: simple-tts voices --language {code}"
+            f"but the narration language is {label}. {voice_list_hint(code)}"
         )
     return voice

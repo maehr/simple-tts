@@ -55,6 +55,8 @@ Version numbers follow the [versioning policy](README.md#versioning).
 
 - A sentence longer than the chunk limit no longer splits inside a word. The chunker splits it at commas first, then at spaces.
 - CLI validation errors and paths with square brackets print as written. Rich no longer reads them as markup.
+- Voice errors name the CLI command `simple-tts voices --language <code>` and the MCP tool `list_voices`. MCP jobs return these errors too.
+- The error for a missing default voice no longer names `--voice`. It tells the user to select another voice.
 
 ## 0.3.0 - Unreleased
 
