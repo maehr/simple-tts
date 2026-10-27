@@ -130,7 +130,7 @@ def create_server(workspace: Path, *, manager: JobManager | None = None) -> Fast
         format: str | None = None,
         output: str | None = None,
         chapter_level: Annotated[int, Field(ge=1, le=6)] = 1,
-        device: Literal["auto", "cuda", "mps", "cpu"] = "auto",
+        device: Literal["cpu", "mps", "cuda"] = "cpu",
     ) -> JobStatus:
         """Start one conversion from exactly one document path or Markdown text.
 

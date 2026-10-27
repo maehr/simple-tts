@@ -56,5 +56,5 @@
 - Do not put credentials in the code. Do not print or log the Hugging Face token.
 - Do not add network calls to the CLI path. Only `ptts` downloads the model, the voice catalogue, and the voices.
 - The Phonon model weights use the CC BY-NC 4.0 license. Do not commit or distribute model weights, voice files, cache files, or generated audio.
-- Keep `--device auto` on the CPU with 8-bit weights. A change needs a reproducible benchmark and a separate review.
+- Keep `cpu` as the default device, with 8-bit weights. A change needs a reproducible benchmark and a separate review.
 - The chunker splits large documents before synthesis. Keep the existing batching logic. Do not increase the buffer sizes.

@@ -40,6 +40,7 @@ ANTON = "3ZKKapPOvuWFcw9f"
         ({"chapter_level": True}, "Chapter level"),
         ({"chapter_level": 1.5}, "Chapter level"),
         ({"device": "gpu"}, "Device"),
+        ({"device": "auto"}, "Device must be cpu, mps, or cuda."),
     ],
 )
 def test_shared_request_validation(tmp_path, changes, message):
@@ -131,18 +132,19 @@ def test_preparation_preview_and_execution(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("device", "expected"),
     [
-        ("auto", "cpu, quantization: q8_0"),
+        (None, "cpu, quantization: q8_0"),
         ("cpu", "cpu, quantization: q8_0"),
         ("mps", "Metal (Test GPU), quantization: f32"),
         ("cuda", "CUDA (Test GPU), quantization: f32"),
     ],
 )
 def test_shared_device_selection(tmp_path, ptts, device, expected):
-    """Auto stays on CPU/q8 and explicit GPUs report their f32 backend."""
+    """The default stays on CPU/q8 and explicit GPUs report their f32 backend."""
     ptts.available_devices.return_value = ["cuda", "metal", "cpu"]
-    request = ConversionRequest(
-        text="Hello.", output=tmp_path / "audio.wav", device=device
-    )
+    request = ConversionRequest(text="Hello.", output=tmp_path / "audio.wav")
+    if device is not None:
+        request = replace(request, device=device)
+    assert request.device == (device or "cpu")
     prepared = prepare_conversion(request, tmp_path)
     events = []
     execute_conversion(

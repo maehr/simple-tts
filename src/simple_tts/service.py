@@ -53,7 +53,7 @@ class ConversionRequest:
     output: Path | None = None
     format_type: str | None = None
     chapter_level: int = 1
-    device: str = "auto"
+    device: str = "cpu"
 
 
 @dataclass(frozen=True)
@@ -163,7 +163,7 @@ def validate_request(request: ConversionRequest) -> tuple[Path, str]:
     if type(request.chapter_level) is not int or not 1 <= request.chapter_level <= 6:
         raise ValueError("Chapter level must be from 1 through 6.")
     if request.device not in DEVICES:
-        raise ValueError("Device must be auto, cuda, mps, or cpu.")
+        raise ValueError("Device must be cpu, mps, or cuda.")
     source = request.input_file or Path("text.md")
     output, format_type = resolve_output(source, request.output, request.format_type)
     if not output.parent.is_dir():

@@ -55,8 +55,8 @@ def test_discovery_schemas_and_defaults(tmp_path, ptts):
             assert props["chapter_level"]["default"] == 1
             assert props["chapter_level"]["minimum"] == 1
             assert props["chapter_level"]["maximum"] == 6
-            assert props["device"]["default"] == "auto"
-            assert props["device"]["enum"] == ["auto", "cuda", "mps", "cpu"]
+            assert props["device"]["default"] == "cpu"
+            assert props["device"]["enum"] == ["cpu", "mps", "cuda"]
             assert props["format"]["default"] is None
             assert props["output"]["default"] is None
             for tool in tools.values():
@@ -184,6 +184,7 @@ def test_tool_conversion_and_polling(tmp_path, source):
         {"text": "Hello.", "chapter_level": 7},
         {"text": "Hello.", "chapter_level": 1.5},
         {"text": "Hello.", "device": "gpu"},
+        {"text": "Hello.", "device": "auto"},
         {"text": "Hello.", "format": "ogg"},
         {"text": "Hello.", "format": "m4b", "output": "audio.mp3"},
         {"input_file": "missing.md"},
@@ -236,9 +237,9 @@ async def run_job(client, manager, arguments):
 @pytest.mark.parametrize(
     ("worker", "device", "backend"),
     [
-        (engine_worker, "auto", {"device": "cpu", "quant": "q8"}),
+        (engine_worker, None, {"device": "cpu", "quant": "q8"}),
         (engine_worker, "cpu", {"device": "cpu", "quant": "q8"}),
-        (metal_engine_worker, "auto", {"device": "cpu", "quant": "q8"}),
+        (metal_engine_worker, None, {"device": "cpu", "quant": "q8"}),
         (metal_engine_worker, "mps", {"device": "metal", "quant": "f32"}),
         (engine_worker, "mps", None),
         (metal_engine_worker, "cuda", None),
@@ -247,22 +248,20 @@ async def run_job(client, manager, arguments):
 def test_job_language_rate_and_device_reach_ptts(
     tmp_path, ptts, worker, device, backend
 ):
-    """Auto uses CPU/q8. MPS uses Metal/f32 or fails without a fallback."""
+    """The default uses CPU/q8. MPS uses Metal/f32 or fails without a fallback."""
+    arguments = {
+        "text": "# Eins\n\nHallo.\n\n# Zwei\n\nTschüss.",
+        "language": "de",
+        "voice": "anton",
+        "duration_delta": -0.2,
+    }
+    if device is not None:
+        arguments["device"] = device
 
     async def scenario():
         manager = JobManager(tmp_path, worker=worker)
         async with Client(create_server(tmp_path, manager=manager)) as client:
-            status = await run_job(
-                client,
-                manager,
-                {
-                    "text": "# Eins\n\nHallo.\n\n# Zwei\n\nTschüss.",
-                    "language": "de",
-                    "voice": "anton",
-                    "duration_delta": -0.2,
-                    "device": device,
-                },
-            )
+            status = await run_job(client, manager, arguments)
         record = json.loads((tmp_path / "ptts.json").read_text())
         if backend is None:
             assert status["state"] == "failed"

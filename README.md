@@ -91,7 +91,7 @@ Each file downloads one time, at its first use:
 | File | Size | First use |
 | --- | --- | --- |
 | Voice catalogue `voices.jsonl` | 33 KB | The first `voices` command, `list_voices` call, or conversion. |
-| 8-bit weights `model.q8.gguf` | 74.6 MB | The first conversion with `--device auto` or `cpu`. |
+| 8-bit weights `model.q8.gguf` | 74.6 MB | The first conversion with `--device cpu`, the default. |
 | f32 weights `model.safetensors` | 121.7 MB | The first conversion with `--device mps` or `cuda`. |
 | One voice | 256 KB | The first conversion that uses the voice. |
 
@@ -327,12 +327,12 @@ Use `--device` to select the hardware and the weight format.
 
 | `--device` | Hardware | Weights |
 | --- | --- | --- |
-| `auto` (default) | CPU | 8-bit (`q8`) |
-| `cpu` | CPU | 8-bit (`q8`) |
+| `cpu` (default) | CPU | 8-bit (`q8`) |
 | `mps` | Apple GPU (Metal) | 32-bit float (`f32`) |
 | `cuda` | NVIDIA GPU (CUDA) | 32-bit float (`f32`) |
 
-`auto` always selects the CPU, also when Metal or CUDA is available.
+The default device is `cpu`, also when Metal or CUDA is available.
+Version 0.4.0 removes `--device auto`.
 8-bit weights run only on the CPU.
 For this reason, `mps` and `cuda` use f32 weights.
 
@@ -396,7 +396,7 @@ simple-tts convert --help
 | `--duration-delta` | Set the speaking rate from -0.3 to 0.3. Negative values speak faster. | `0.0` |
 | `-f`, `--format` | Select `m4a`, `m4b`, `mp4`, `mp3`, `wav`, or `opus`. | `m4a` |
 | `--chapter-level` | Select the heading level from 1 through 6. | `1` |
-| `--device` | Select `auto`, `cpu`, `mps`, or `cuda`. | `auto` |
+| `--device` | Select `cpu`, `mps`, or `cuda`. | `cpu` |
 | `-y`, `--yes` | Skip the confirmation prompt. | Off |
 
 List the voices of one language with this command.
@@ -423,7 +423,8 @@ simple-tts check-deps
 | `Voice 'Zoey' is English (en), but the narration language is German (de).` | Select a voice of the narration language, or change the language. The message names the command and the MCP tool that list the voices. |
 | `The default German (de) voice 'Nele' is not in the voice catalogue. Select another voice.` | The catalogue does not contain the default voice. Select a listed voice of the narration language. |
 | `Voice 'Nele,Anton' contains a comma. Each conversion uses one voice. Voice rotation is removed.` | Select one voice. Version 0.4.0 removes voice rotation. |
-| `Requested device 'mps' is unavailable in this ptts build.` | The installed `ptts` build does not support this GPU. Use `--device auto`. |
+| `Requested device 'mps' is unavailable in this ptts build.` | The installed `ptts` build does not support this GPU. Use `--device cpu`. |
+| `Device must be cpu, mps, or cuda.` | Version 0.4.0 removes `--device auto`. Use `--device cpu`, or omit the option. |
 | `No such option: --speed` | Use `--duration-delta`. See [Change the speaking rate](#change-the-speaking-rate). |
 
 ## Local MCP server
@@ -540,7 +541,7 @@ Use these tool arguments for a French document within the workspace.
   "voice": "Noémie",
   "duration_delta": -0.1,
   "chapter_level": 1,
-  "device": "auto"
+  "device": "cpu"
 }
 ```
 
@@ -554,7 +555,7 @@ Use these tool arguments for a French document within the workspace.
 | `format` | `m4a`, `m4b`, `mp4`, `mp3`, `wav`, or `opus`. | None |
 | `output` | An output path in the workspace. | None |
 | `chapter_level` | An integer from 1 through 6. | `1` |
-| `device` | `auto`, `cpu`, `mps`, or `cuda`. | `"auto"` |
+| `device` | `cpu`, `mps`, or `cuda`. | `"cpu"` |
 
 The server applies the CLI rules for languages, voices, chapters, the speaking rate, formats, and devices.
 `start_conversion` has no `speed` argument.

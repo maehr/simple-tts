@@ -31,14 +31,13 @@ def cache_snapshot(cache, *names):
 @pytest.mark.parametrize(
     ("device", "backend", "quant", "display"),
     [
-        ("auto", "cpu", "q8", "Device: cpu, quantization: q8_0"),
         ("cpu", "cpu", "q8", "Device: cpu, quantization: q8_0"),
         ("mps", "metal", "f32", "Device: Metal (Test GPU), quantization: f32"),
         ("cuda", "cuda", "f32", "Device: CUDA (Test GPU), quantization: f32"),
     ],
 )
 def test_device_selects_backend_and_weights(ptts, device, backend, quant, display):
-    """Auto uses CPU/q8 even with a GPU; explicit GPUs use f32 weights."""
+    """CPU uses q8 weights; explicit GPUs use f32 weights."""
     ptts.available_devices.return_value = ["cuda", "metal", "cpu"]
     report = Mock()
     model = tts.load_tts(language="de", device=device, report=report)
@@ -54,6 +53,16 @@ def test_device_selects_backend_and_weights(ptts, device, backend, quant, displa
         f"Model: {tts.MODEL_SOURCE}",
         display,
     ]
+
+
+def test_default_device_is_cpu_q8_with_a_gpu(ptts):
+    """Without a device option, Phonon loads CPU/q8, also when a GPU exists."""
+    ptts.available_devices.return_value = ["cuda", "metal", "cpu"]
+    tts.load_tts(language="en", report=Mock())
+    assert ptts.TTS.call_args.kwargs["device"] == "cpu"
+    assert ptts.TTS.call_args.kwargs["quant"] == "q8"
+    assert tts.DEVICES == {"cpu", "mps", "cuda"}
+    assert "auto" not in tts.BACKENDS
 
 
 def test_pinned_model_source():
@@ -78,6 +87,7 @@ def test_unavailable_gpu_never_runs_on_cpu(ptts, device):
         ({"language": "it"}, "Language must be one of: en, de, es, fr"),
         ({"language": "pt"}, "Language must be one of"),
         ({"language": "DE"}, "Language must be one of"),
+        ({"device": "auto"}, "Device must be cpu, mps, or cuda."),
         ({"device": "metal"}, "Device must be"),
         ({"device": "gpu"}, "Device must be"),
         ({"duration_delta": -0.31}, "Duration delta must be from -0.3 through 0.3"),
@@ -114,7 +124,7 @@ def test_local_model_variable_takes_precedence(ptts, tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("device", "files", "cached"),
     [
-        ("auto", ["config.json", "tokenizer.json", "model.q8.gguf"], True),
+        ("cpu", ["config.json", "tokenizer.json", "model.q8.gguf"], True),
         ("mps", ["config.json", "tokenizer.json", "model.safetensors"], True),
         ("mps", ["config.json", "tokenizer.json", "model.q8.gguf"], False),
         ("cpu", ["config.json", "model.q8.gguf"], False),
@@ -196,7 +206,7 @@ def test_loaded_model_is_checked(ptts, change, message):
         (OSError("connection refused"), "cannot download.*connection refused"),
         (
             NotImplementedError("device 'cuda' is not available in this build"),
-            "not available in this build. Use --device auto or cpu.",
+            "not available in this build. Use --device cpu.",
         ),
     ],
 )

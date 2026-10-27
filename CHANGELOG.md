@@ -12,7 +12,7 @@ Version numbers follow the [versioning policy](README.md#versioning).
 - BREAKING CHANGE: Remove voice rotation. `--voice` and MCP `voice` accept one voice. A value with a comma fails before extraction. Each conversion uses one voice for all chapters.
 - BREAKING CHANGE: Kokoro voice IDs, such as `af_bella`, no longer work. `--voice` accepts one name or voice ID from the Phonon voice catalogue.
 - BREAKING CHANGE: The default voice depends on `--language`: Zoey (`en`), Nele (`de`), Noa (`es`), and Noémie (`fr`). The previous default was `af_bella`.
-- BREAKING CHANGE: `--device auto` always selects the CPU with 8-bit weights. It no longer selects CUDA or MPS. `--device mps` and `--device cuda` use f32 weights.
+- BREAKING CHANGE: Remove `--device auto`. The default device is `cpu`, with 8-bit weights. `--device mps` and `--device cuda` use f32 weights.
 - BREAKING CHANGE: MCP `start_conversion` removes `speed` and rejects a request that contains it. It adds `language` and `duration_delta`.
 - BREAKING CHANGE: MCP `start_conversion` replaces the `voices` list with one optional `voice` string. Omit `voice` to select the default voice of the language. The server rejects a request that contains `voices`.
 - BREAKING CHANGE: MCP voice errors are now job failures, not tool errors. An unknown voice or a voice of a different language sets the job state to `failed`. The `error` field gives the reason. Syntax errors stay tool errors.

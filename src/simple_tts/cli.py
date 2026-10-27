@@ -204,12 +204,9 @@ def convert(
         str,
         typer.Option(
             "--device",
-            help=(
-                "Device: auto or cpu (CPU, 8-bit weights), "
-                "mps (Metal, f32), or cuda (f32)."
-            ),
+            help="Device: cpu (8-bit weights), mps (Metal, f32), or cuda (f32).",
         ),
-    ] = "auto",
+    ] = "cpu",
     yes: Annotated[
         bool,
         typer.Option("--yes", "-y", help="Skip the confirmation prompt."),

@@ -122,6 +122,9 @@ class TestCLIConvert:
         assert "en, de, es, or fr" in clean
         assert "--duration-delta" in clean
         assert "-0.3<=x<=0.3" in clean
+        assert "cpu (8-bit weights), mps (Metal, f32), or cuda (f32)" in clean
+        assert "[default: cpu]" in clean
+        assert "auto" not in clean
         assert "--speed" not in clean
         assert "af_bella" not in clean
         assert "Kokoro" not in clean
@@ -232,6 +235,7 @@ def test_output_format_resolution(
         ["--format", "invalid"],
         ["-o", "book.flac"],
         ["--device", "invalid"],
+        ["--device", "auto"],
         ["--chapter-level", "0"],
         ["--chapter-level", "7"],
         ["--voice", ""],
@@ -292,6 +296,7 @@ def test_rejected_options_precede_synthesis(conversion, monkeypatch, arguments):
             "Voice rotation is removed.",
         ),
         (["--voice", ""], "The voice name or voice ID must not be empty."),
+        (["--device", "auto"], "Device must be cpu, mps, or cuda."),
         (["--language", "it"], "Unsupported language 'it'"),
         (["--duration-delta", "nan"], "Duration delta must be from -0.3"),
     ],

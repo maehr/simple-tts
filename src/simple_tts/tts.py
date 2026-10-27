@@ -4,7 +4,7 @@ Each simple-tts device maps to a ptts device and a weight format. 8-bit
 weights run only on the CPU, so GPU devices use f32 weights.
 
 Example:
-    >>> BACKENDS["auto"], BACKENDS["mps"]
+    >>> BACKENDS["cpu"], BACKENDS["mps"]
     (('cpu', 'q8'), ('metal', 'f32'))
 """
 
@@ -24,10 +24,9 @@ if TYPE_CHECKING:
     from ptts import TTS, AudioStream
 
 SAMPLE_RATE = 24000
-DEVICES = {"auto", "cuda", "mps", "cpu"}
-# Auto selects the CPU deliberately: it was faster than Metal in benchmarks.
+DEVICES = {"cpu", "mps", "cuda"}
+# The CPU is the default deliberately: it was faster than Metal in benchmarks.
 BACKENDS = {
-    "auto": ("cpu", "q8"),
     "cpu": ("cpu", "q8"),
     "mps": ("metal", "f32"),
     "cuda": ("cuda", "f32"),
@@ -84,7 +83,7 @@ def _set_threads() -> None:
 def _phonon_error(error: Exception) -> RuntimeError:
     """Explain a ptts error without credentials."""
     if isinstance(error, NotImplementedError):
-        return RuntimeError(f"{error}. Use --device auto or cpu.")
+        return RuntimeError(f"{error}. Use --device cpu.")
     if isinstance(error, LookupError):
         return RuntimeError(f"Phonon cannot find a checkpoint or voice: {error}")
     if "GatedRepo" in str(error):
@@ -101,19 +100,19 @@ def _phonon_error(error: Exception) -> RuntimeError:
 def load_tts(
     *,
     language: str,
-    device: str = "auto",
+    device: str = "cpu",
     duration_delta: float = 0.0,
     report: Callable[[str], None] = print,
 ) -> "TTS":
     """Load Phonon 40M Multilingual once for a conversion.
 
-    Auto and CPU use 8-bit weights on the CPU, also on Macs with Metal.
+    The default CPU device uses 8-bit weights, also on Macs with Metal.
     MPS uses f32 weights on Metal, and CUDA uses f32 weights on CUDA.
     Explicit GPU requests fail when the ptts build lacks the device.
 
     Args:
         language: Narration language code from ``LANGUAGES``.
-        device: One of auto, cpu, mps, or cuda.
+        device: One of cpu, mps, or cuda.
         duration_delta: Rate condition. Negative values speak faster.
         report: Receives the model source, device, and weight format.
 
@@ -127,7 +126,7 @@ def load_tts(
     if language not in LANGUAGES:
         raise ValueError(f"Language must be one of: {', '.join(LANGUAGES)}.")
     if device not in DEVICES:
-        raise ValueError("Device must be auto, cuda, mps, or cpu.")
+        raise ValueError("Device must be cpu, mps, or cuda.")
     low, high = DURATION_DELTA_RANGE
     if not math.isfinite(duration_delta) or not low <= duration_delta <= high:
         raise ValueError(f"Duration delta must be from {low} through {high}.")
@@ -140,7 +139,7 @@ def load_tts(
     if backend not in ptts.available_devices():
         raise RuntimeError(
             f"Requested device '{device}' is unavailable in this ptts build. "
-            "Use --device auto or cpu."
+            "Use --device cpu."
         )
     _set_threads()
     source = model_source(quant)
