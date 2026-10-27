@@ -1,8 +1,8 @@
 """Narration languages and Phonon catalogue voices.
 
-Each conversion uses one narration language. Every voice comes from the
-Phonon voice catalogue and must have the same language as the narration.
-Names match without case or accents. Voice IDs match exactly.
+Each conversion uses one narration language and one voice. The voice comes
+from the Phonon voice catalogue and must have the same language as the
+narration. Names match without case or accents. Voice IDs match exactly.
 
 Example:
     >>> catalog = [
@@ -10,12 +10,12 @@ Example:
     ...     Voice("Anton", "3ZKKapPOvuWFcw9f", "de"),
     ...     Voice("Noémie", "FXxJ9mANRq6BCTX5", "fr"),
     ... ]
-    >>> [voice.name for voice in resolve_voices((), "de", catalog)]
-    ['Nele']
-    >>> [voice.name for voice in resolve_voices(parse_voices("noemie"), "fr", catalog)]
-    ['Noémie']
+    >>> resolve_voice(None, "de", catalog).name
+    'Nele'
+    >>> resolve_voice("noemie", "fr", catalog).name
+    'Noémie'
     >>> try:
-    ...     resolve_voices(("Noémie",), "de", catalog)
+    ...     resolve_voice("Noémie", "de", catalog)
     ... except ValueError as error:
     ...     print(str(error).split(", but")[0])
     Voice 'Noémie' is French (fr)
@@ -93,23 +93,25 @@ def normalize_name(value: str) -> str:
     return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
 
 
-def check_voice_names(names: Sequence[str]) -> None:
-    """Reject empty entries and entries with commas without the catalogue."""
-    for name in names:
-        if not name.strip() or "," in name:
-            raise ValueError("Voice names must not be empty or contain commas.")
+def check_voice(value: str) -> None:
+    """Reject an empty voice value or a value with a comma.
 
-
-def parse_voices(value: str) -> tuple[str, ...]:
-    """Split a comma-separated voice rotation and check only its syntax.
+    This syntax check reads no catalogue. Earlier releases used commas to
+    rotate voices across chapters.
 
     Example:
-        >>> parse_voices(" Nele, Anton ")
-        ('Nele', 'Anton')
+        >>> check_voice("Nele,Anton")  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+        ...
+        ValueError: Voice 'Nele,Anton' contains a comma. ... rotation is removed.
     """
-    names = tuple(name.strip() for name in value.split(","))
-    check_voice_names(names)
-    return names
+    if not value.strip():
+        raise ValueError("The voice name or voice ID must not be empty.")
+    if "," in value:
+        raise ValueError(
+            f"Voice '{value}' contains a comma. Each conversion uses one voice. "
+            "Voice rotation is removed."
+        )
 
 
 def load_catalog() -> list[Voice]:
@@ -182,46 +184,42 @@ def find_voice(value: str, language: str, catalog: Sequence[Voice]) -> Voice:
     return (native or matches)[0]
 
 
-def resolve_voices(
-    names: Sequence[str], language: str, catalog: Sequence[Voice] | None = None
-) -> tuple[Voice, ...]:
-    """Resolve a chapter rotation for one narration language.
+def resolve_voice(
+    name: str | None, language: str, catalog: Sequence[Voice] | None = None
+) -> Voice:
+    """Resolve the one voice of a conversion for its narration language.
 
     Args:
-        names: Voice names or voice IDs. No names select the language default.
+        name: A voice name or voice ID. ``None`` selects the language default.
         language: Narration language code from ``LANGUAGES``.
         catalog: Catalogue voices. Default: the pinned Phonon catalogue.
 
     Returns:
-        The voices in rotation order.
+        The catalogue voice.
 
     Raises:
-        ValueError: A voice is unknown or does not speak the narration language.
+        ValueError: The voice is empty, unknown, or does not speak the
+            narration language.
         RuntimeError: The catalogue is not available.
     """
     code = check_language(language)
-    check_voice_names(names)
+    if name is not None:
+        check_voice(name)
     voices = load_catalog() if catalog is None else catalog
     label = f"{LANGUAGES[code]} ({code})"
-    if not names:
-        default = DEFAULT_VOICES[code]
-        if not any(
-            voice.name == default and voice.language == code for voice in voices
-        ):
+    if name is None:
+        name = DEFAULT_VOICES[code]
+        if not any(voice.name == name and voice.language == code for voice in voices):
             raise ValueError(
-                f"The default {label} voice '{default}' is not in the voice "
+                f"The default {label} voice '{name}' is not in the voice "
                 "catalogue. Select a voice with --voice."
             )
-        names = (default,)
-    resolved = []
-    for name in names:
-        voice = find_voice(name, code, voices)
-        if voice.language != code:
-            spoken = LANGUAGES.get(voice.language, "an unsupported language")
-            raise ValueError(
-                f"Voice '{voice.name}' is {spoken} ({voice.language or '?'}), "
-                f"but the narration language is {label}. List {LANGUAGES[code]} "
-                f"voices with: simple-tts voices --language {code}"
-            )
-        resolved.append(voice)
-    return tuple(resolved)
+    voice = find_voice(name, code, voices)
+    if voice.language != code:
+        spoken = LANGUAGES.get(voice.language, "an unsupported language")
+        raise ValueError(
+            f"Voice '{voice.name}' is {spoken} ({voice.language or '?'}), "
+            f"but the narration language is {label}. List {LANGUAGES[code]} "
+            f"voices with: simple-tts voices --language {code}"
+        )
+    return voice

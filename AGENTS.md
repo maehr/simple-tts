@@ -21,7 +21,7 @@
 - Lint and format: `uv run --extra mcp ruff check src tests` and `uv run --extra mcp ruff format src tests`.
 - Run the tests and source doctests with coverage: `uv run --extra mcp pytest tests src/simple_tts`.
 - Check the types: `uv run --extra mcp ty check src`.
-- Run the tests with the real model: `SIMPLE_TTS_MODEL_TESTS=1 uv run --extra mcp pytest -m model`. These tests need access to the gated model.
+- Run the tests with the real model: `SIMPLE_TTS_MODEL_TESTS=1 uv run --extra mcp pytest -m model`. These tests need access to the gated model. Set `SIMPLE_TTS_TEST_DEVICE` to `cpu` (default), `mps`, or `cuda` to select the device.
 - Smoke test: `uv run simple-tts convert README.md -y` writes one audio file. This test needs access to the gated model. The first run downloads the model.
 
 ## Coding Style and Naming Conventions

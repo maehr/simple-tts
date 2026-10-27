@@ -26,8 +26,8 @@ from simple_tts.voices import (
     DEFAULT_LANGUAGE,
     Voice,
     check_language,
-    check_voice_names,
-    resolve_voices,
+    check_voice,
+    resolve_voice,
 )
 
 Phase = Literal[
@@ -39,8 +39,8 @@ Phase = Literal[
 class ConversionRequest:
     """Source and options shared by the CLI and MCP server.
 
-    ``voices`` holds catalogue voice names or IDs that rotate once per
-    chapter. No voices select the default voice of ``language``.
+    ``voice`` is one catalogue voice name or ID for every chapter. ``None``
+    selects the default voice of ``language``.
     ``duration_delta`` is the Phonon rate condition: negative values speak
     faster and positive values slower.
     """
@@ -48,7 +48,7 @@ class ConversionRequest:
     input_file: Path | None = None
     text: str | None = None
     language: str = DEFAULT_LANGUAGE
-    voices: tuple[str, ...] = ()
+    voice: str | None = None
     duration_delta: float = 0.0
     output: Path | None = None
     format_type: str | None = None
@@ -94,7 +94,7 @@ class PreparedConversion:
     request: ConversionRequest
     output: Path
     format_type: str
-    voices: tuple[Voice, ...]
+    voice: Voice
     document: ExtractedDocument
     sections: list[tuple[str, list[str]]]
     started: float
@@ -149,7 +149,7 @@ def check_duration_delta(value: float) -> None:
 def validate_request(request: ConversionRequest) -> tuple[Path, str]:
     """Reject invalid options before extraction or model loading.
 
-    Voices get a syntax check only. The catalogue check happens in
+    The voice gets a syntax check only. The catalogue check happens in
     ``prepare_conversion``, so job submission reads no catalogue.
     """
     if (request.input_file is None) == (request.text is None):
@@ -157,7 +157,8 @@ def validate_request(request: ConversionRequest) -> tuple[Path, str]:
     if request.text is not None and not request.text.strip():
         raise ValueError("The document contains no narration text.")
     check_language(request.language)
-    check_voice_names(request.voices)
+    if request.voice is not None:
+        check_voice(request.voice)
     check_duration_delta(request.duration_delta)
     if type(request.chapter_level) is not int or not 1 <= request.chapter_level <= 6:
         raise ValueError("Chapter level must be from 1 through 6.")
@@ -202,7 +203,7 @@ def prepare_conversion(
     report: Callable[[ProgressEvent], None] = _ignore_event,
     check_cancelled: Callable[[], None] = _no_cancellation,
 ) -> PreparedConversion:
-    """Resolve voices and extract narration before the CLI asks for confirmation.
+    """Resolve the voice and extract narration before the CLI asks to confirm.
 
     Voice errors stop the conversion before extraction. An MCP worker calls
     this function, so the catalogue read stays out of job submission.
@@ -210,7 +211,7 @@ def prepare_conversion(
     started = time.monotonic()
     output, format_type = validate_request(request)
     request = replace(request, language=check_language(request.language))
-    voices = resolve_voices(request.voices, request.language)
+    voice = resolve_voice(request.voice, request.language)
     check_cancelled()
     report(ProgressEvent("extracting"))
     require_dependencies()
@@ -230,7 +231,7 @@ def prepare_conversion(
         raise ValueError("The document contains no narration text.")
     report(ProgressEvent("extracting", total_chunks=total))
     return PreparedConversion(
-        request, output, format_type, voices, document, sections, started
+        request, output, format_type, voice, document, sections, started
     )
 
 
@@ -248,7 +249,7 @@ def execute_conversion(
     completed = 0
     check_cancelled()
     report(ProgressEvent("loading", total_chunks=total))
-    # One model serves every chapter voice of the conversion.
+    # One model and one voice serve every chapter of the conversion.
     model = load_tts(
         language=request.language,
         device=request.device,
@@ -258,12 +259,12 @@ def execute_conversion(
     check_cancelled()
     report(ProgressEvent("synthesizing", 0, total))
     pcm_path = scratch / "narration.f32le"
+    # The voice ID is unique. ptts downloads the voice before the first frame.
+    voice = prepared.voice.voice_id
     chapters = []
     with pcm_path.open("wb") as stream:
         writer = PCMWriter(stream)
-        for index, (title, chunks) in enumerate(prepared.sections):
-            # The voice ID is unique. ptts downloads a voice at its first use.
-            voice = prepared.voices[index % len(prepared.voices)].voice_id
+        for title, chunks in prepared.sections:
             start = writer.samples
             for chunk in chunks:
                 check_cancelled()

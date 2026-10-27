@@ -4,7 +4,7 @@ A simple CLI for converting documents to speech with Phonon 40M Multilingual.
 
 Example:
     $ simple-tts convert document.md --language de
-    $ simple-tts convert document.md --language de --voice Nele,Anton
+    $ simple-tts convert document.md --language de --voice Anton
     $ simple-tts voices --language de
     $ simple-tts check-deps
 """
@@ -48,7 +48,6 @@ from simple_tts.voices import (
     LANGUAGES,
     available_voices,
     check_language,
-    parse_voices,
 )
 
 app = typer.Typer(
@@ -109,10 +108,10 @@ def display_checkpoint(prepared: PreparedConversion) -> None:
     config_table.add_row("Input File", escape(str(request.input_file)))
     config_table.add_row("Output File", escape(str(prepared.output)))
     config_table.add_row("Language", language_label(request.language))
-    for voice in prepared.voices:
-        config_table.add_row(
-            "Voice", escape(f"{voice.name} ({voice.voice_id}): {voice.description}")
-        )
+    voice = prepared.voice
+    config_table.add_row(
+        "Voice", escape(f"{voice.name} ({voice.voice_id}): {voice.description}")
+    )
     config_table.add_row("Duration Delta", f"{request.duration_delta:g}")
     config_table.add_row("Format", prepared.format_type)
     config_table.add_row("Text Length", f"{text_length:,} characters")
@@ -162,8 +161,8 @@ def convert(
             "--voice",
             "-v",
             help=(
-                "Catalogue voice names or IDs, separated by commas. Rotate once "
-                "per chapter. Default: the default voice of the language."
+                "One catalogue voice name or voice ID for every chapter. "
+                "Default: the default voice of the language."
             ),
             show_default=False,
         ),
@@ -216,13 +215,13 @@ def convert(
         typer.Option("--yes", "-y", help="Skip the confirmation prompt."),
     ] = False,
 ) -> None:
-    """Convert a document to speech with optional chapters and voice rotation."""
+    """Convert a document to speech with one voice and optional chapters."""
     total_start = time.time()
     try:
         request = ConversionRequest(
             input_file=input_file,
             language=check_language(language),
-            voices=parse_voices(voice) if voice is not None else (),
+            voice=voice,
             duration_delta=duration_delta,
             output=output,
             format_type=format_type,
@@ -261,8 +260,7 @@ def _convert_prepared(
     input_file = request.input_file
     assert input_file is not None
     output = prepared.output
-    names = ", ".join(voice.name for voice in prepared.voices)
-    console.print(f"[bold blue]Voice:[/] {escape(names)}")
+    console.print(f"[bold blue]Voice:[/] {escape(prepared.voice.name)}")
     if not prepared.document.matched_headings:
         console.print(
             f"[yellow]Warning: No headings match level {request.chapter_level}. "

@@ -57,9 +57,7 @@ def test_conversion_results_and_cleanup(tmp_path, source_kind):
         manager = JobManager(tmp_path, worker=mock_worker)
         try:
             start = manager.start(
-                ConversionRequest(
-                    **source, voices=("Zoey", "Hadley"), format_type="m4b"
-                )
+                ConversionRequest(**source, voice="Hadley", format_type="m4b")
             )
             assert start.state == "running"
             assert start.total_chunks is None
@@ -141,7 +139,8 @@ def test_worker_failures_keep_records_and_clean_files(tmp_path, worker):
     ("options", "message"),
     [
         ({"language": "it"}, "Unsupported language"),
-        ({"voices": ("Nele,Anton",)}, "contain commas"),
+        ({"voice": "Nele,Anton"}, "Voice rotation is removed"),
+        ({"voice": ""}, "must not be empty"),
         ({"duration_delta": 0.4}, "Duration delta"),
     ],
 )
@@ -161,7 +160,7 @@ def test_unknown_voice_is_a_worker_error(tmp_path, ptts):
         manager = JobManager(tmp_path, worker=mock_worker)
         try:
             start = manager.start(
-                ConversionRequest(text="Hallo.", language="de", voices=("Zoey",))
+                ConversionRequest(text="Hallo.", language="de", voice="Zoey")
             )
             assert start.state == "running"
             done = await finish(manager, start.job_id)

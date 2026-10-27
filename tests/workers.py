@@ -14,8 +14,6 @@ from simple_tts import service
 from simple_tts.jobs import conversion_worker
 from simple_tts.processes import run_command
 
-ZOEY = "NbpkqMVS3CJeq2j8"
-
 
 def use_fake_ptts():
     """Install the test ptts module, so no worker reads the real catalogue."""
@@ -46,7 +44,7 @@ def mock_worker(request, workspace, scratch, staged, cancelled, sender):
         return object()
 
     def synthesize(model, text, voice):
-        return np.full(2400, 0.1 if voice == ZOEY else 0.2, dtype=np.float32)
+        return np.full(2400, 0.1, dtype=np.float32)
 
     service.load_tts = load
     service.stream_speech = one_frame(synthesize)

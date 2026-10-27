@@ -9,18 +9,19 @@ Version numbers follow the [versioning policy](README.md#versioning).
 - BREAKING CHANGE: Phonon 40M Multilingual replaces Kokoro. simple-tts uses the `ptts` runtime 0.4.2 and no longer installs Kokoro or PyTorch.
 - BREAKING CHANGE: The model weights are gated and use the CC BY-NC 4.0 license. This license does not permit commercial use. Accept the model terms on Hugging Face before the first conversion. See the [license section](README.md#license).
 - BREAKING CHANGE: Remove `--speed` and `-s`. Use `--duration-delta` from -0.3 to 0.3. This value is a model condition, not a speed multiplier.
-- BREAKING CHANGE: Kokoro voice IDs, such as `af_bella`, no longer work. `--voice` accepts names or voice IDs from the Phonon voice catalogue.
+- BREAKING CHANGE: Remove voice rotation. `--voice` and MCP `voice` accept one voice. A value with a comma fails before extraction. Each conversion uses one voice for all chapters.
+- BREAKING CHANGE: Kokoro voice IDs, such as `af_bella`, no longer work. `--voice` accepts one name or voice ID from the Phonon voice catalogue.
 - BREAKING CHANGE: The default voice depends on `--language`: Zoey (`en`), Nele (`de`), Noa (`es`), and Noémie (`fr`). The previous default was `af_bella`.
 - BREAKING CHANGE: `--device auto` always selects the CPU with 8-bit weights. It no longer selects CUDA or MPS. `--device mps` and `--device cuda` use f32 weights.
 - BREAKING CHANGE: MCP `start_conversion` removes `speed` and rejects a request that contains it. It adds `language` and `duration_delta`.
-- BREAKING CHANGE: The MCP `voices` default changes from `["af_bella"]` to `[]`. An empty list selects the default voice of the language.
+- BREAKING CHANGE: MCP `start_conversion` replaces the `voices` list with one optional `voice` string. Omit `voice` to select the default voice of the language. The server rejects a request that contains `voices`.
 - BREAKING CHANGE: MCP voice errors are now job failures, not tool errors. An unknown voice or a voice of a different language sets the job state to `failed`. The `error` field gives the reason. Syntax errors stay tool errors.
 - BREAKING CHANGE: MCP `list_voices` returns `languages` and `voices`. Each voice has `name`, `id`, `language`, `description`, and `default`. The tool accepts an optional `language`.
-- BREAKING CHANGE: Remove `VOICES` and `get_voice_info()` from `voices.py`. Use `available_voices()` and `resolve_voices()`.
+- BREAKING CHANGE: Remove `VOICES` and `get_voice_info()` from `voices.py`. Use `available_voices()` and `resolve_voice()`.
 - BREAKING CHANGE: Remove `synthesize()` and `synthesize_chunks()` from `tts.py`. Use `load_tts()` and `stream_speech()`.
 - BREAKING CHANGE: `load_tts()` requires `language` and accepts `duration_delta`. It no longer accepts `voice`.
-- BREAKING CHANGE: `ConversionRequest` removes `speed` and adds `language` and `duration_delta`. Its `voices` default is now empty.
-- BREAKING CHANGE: `parse_voices()` moves from `service.py` to `voices.py`. It returns a tuple.
+- BREAKING CHANGE: `ConversionRequest` removes `speed` and `voices`. It adds `language`, `voice`, and `duration_delta`. `voice` is one optional voice name or voice ID.
+- BREAKING CHANGE: Remove `parse_voices()` from `service.py`. Use `resolve_voice()` to select one voice.
 
 ### Added
 
@@ -30,7 +31,7 @@ Version numbers follow the [versioning policy](README.md#versioning).
 - The CLI and the MCP worker reject unknown voices and voices of a different language before extraction.
 - `--duration-delta` and MCP `duration_delta` control the speaking rate. Negative values speak faster.
 - `SIMPLE_TTS_MODEL` selects a local checkpoint folder or an `hf://` source.
-- The confirmation table shows the language, each voice with its ID and description, and the duration delta.
+- The confirmation table shows the language, the voice with its ID and description, and the duration delta.
 - Unit tests use a fake `ptts` module. They download no model weights, voices, or voice catalogue.
 - Narration fixtures in English, German, Spanish, and French test the text chunker.
 
@@ -39,7 +40,8 @@ Version numbers follow the [versioning policy](README.md#versioning).
 - simple-tts pins the model revision `1537ce46c64f42903e0d608b132ccb073dac46d2`.
 - simple-tts uses the default voice catalogue of `ptts`, revision `da6c9ec0d47be8df5c87c730a3aa97187f3229c3`.
 - A complete cached snapshot of the pinned model loads as a local folder. This load sends no request to the Hub.
-- The model loads once per conversion. All voices of the conversion use this model.
+- The model loads once per conversion.
+- An uncached voice without a network fails at the first text chunk, before any audio exists.
 - The service streams 24 kHz mono float32 frames into the PCM file. It checks cancellation after each frame.
 - simple-tts uses at most six CPU threads.
 - The text chunker splits narration at paragraph and sentence boundaries. A sentence can end with `.`, `!`, `?`, or `…`.

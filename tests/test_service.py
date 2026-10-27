@@ -16,7 +16,6 @@ from simple_tts.voices import Voice
 
 ZOEY = "NbpkqMVS3CJeq2j8"
 HADLEY = "bXwrkHhURL1VFJdG"
-NELE = "2A2fFf8SkDEJ8nzx"
 ANTON = "3ZKKapPOvuWFcw9f"
 
 
@@ -28,8 +27,9 @@ ANTON = "3ZKKapPOvuWFcw9f"
         ({"language": "it"}, "Unsupported language"),
         ({"language": "de-DE"}, "Unsupported language"),
         ({"language": ""}, "Unsupported language"),
-        ({"voices": ("Zoey,Hadley",)}, "contain commas"),
-        ({"voices": ("Zoey", " ")}, "must not be empty"),
+        ({"voice": "Zoey,Hadley"}, "Voice rotation is removed"),
+        ({"voice": ""}, "must not be empty"),
+        ({"voice": " "}, "must not be empty"),
         ({"duration_delta": float("nan")}, "Duration delta"),
         ({"duration_delta": float("inf")}, "Duration delta"),
         ({"duration_delta": -0.31}, "Duration delta"),
@@ -53,8 +53,8 @@ def test_shared_request_validation(tmp_path, changes, message):
     "changes",
     [
         {},
-        {"language": "DE", "voices": ("Unknown",)},
-        {"language": "fr", "voices": ("Zoey",)},
+        {"language": "DE", "voice": "Unknown"},
+        {"language": "fr", "voice": "Zoey"},
         {"duration_delta": -0.3},
         {"duration_delta": 0.3},
         {"duration_delta": 0},
@@ -68,11 +68,11 @@ def test_validation_reads_no_catalogue(tmp_path, ptts, changes):
 
 
 def test_preparation_preview_and_execution(tmp_path, monkeypatch):
-    """Preparation does not load a model and execution preserves chapter rotation."""
+    """Preparation loads no model, and one voice speaks every chunk."""
     output = tmp_path / "audio.M4B"
     request = ConversionRequest(
         text="Intro.\n\n## First\n\n" + "A" * 2000 + "\n\n## Last\n\nEnd.",
-        voices=("zoey", HADLEY),
+        voice=HADLEY,
         duration_delta=-0.2,
         output=output,
         chapter_level=2,
@@ -86,7 +86,7 @@ def test_preparation_preview_and_execution(tmp_path, monkeypatch):
     assert prepared.format_type == "m4b"
     assert prepared.document.matched_headings == 2
     assert len(prepared.chunks) == 5
-    assert [voice.name for voice in prepared.voices] == ["Zoey", "Hadley"]
+    assert prepared.voice == Voice("Hadley", HADLEY, "en", "Hadley test voice.")
     spoken = []
 
     @contextmanager
@@ -110,7 +110,7 @@ def test_preparation_preview_and_execution(tmp_path, monkeypatch):
     assert load.call_args.kwargs["device"] == "mps"
     assert load.call_args.kwargs["duration_delta"] == -0.2
     # ptts receives the unique catalogue voice ID, not the typed name.
-    assert spoken == [ZOEY] + [HADLEY] * 3 + [ZOEY]
+    assert spoken == [HADLEY] * 5
     assert [chapter.title for chapter in result.chapters] == [
         "Introduction",
         "First",
@@ -205,13 +205,10 @@ def test_language_selects_model_voice_and_rate(
 @pytest.mark.parametrize(
     ("changes", "error", "message"),
     [
-        ({"voices": ("Unknown",)}, ValueError, "Unknown voice 'Unknown'"),
-        ({"language": "de", "voices": ("Zoey",)}, ValueError, "'Zoey' is English"),
-        (
-            {"language": "de", "voices": ("Nele", "Noémie")},
-            ValueError,
-            "'Noémie' is French",
-        ),
+        ({"voice": "Unknown"}, ValueError, "Unknown voice 'Unknown'"),
+        ({"language": "de", "voice": "Zoey"}, ValueError, "'Zoey' is English"),
+        ({"language": "de", "voice": "Noémie"}, ValueError, "'Noémie' is French"),
+        ({"language": "de", "voice": "Nele,Anton"}, ValueError, "rotation is removed"),
         ({"catalog": OSError("offline")}, RuntimeError, "Connect to the internet"),
     ],
 )
@@ -264,25 +261,29 @@ def frames(events, name, sizes, failure=None):
 
 
 def test_frames_stream_to_pcm_with_sample_boundaries(tmp_path, monkeypatch):
-    """Two German voices rotate per chapter with sample-derived chapter bounds."""
+    """One explicit voice speaks both chapters with sample-derived bounds."""
     request = ConversionRequest(
         text="## One\n\nErstens.\n\n## Two\n\nZweitens.",
         language="de",
-        voices=("Nele", "Anton"),
+        voice="Anton",
         output=tmp_path / "audio.m4b",
         chapter_level=2,
     )
     prepared = prepare_conversion(request, tmp_path)
-    assert prepared.voices == (
-        Voice("Nele", NELE, "de", "Nele test voice."),
-        Voice("Anton", ANTON, "de", "Anton test voice."),
-    )
+    assert prepared.voice == Voice("Anton", ANTON, "de", "Anton test voice.")
     events = []
     model = tts.load_tts(language="de", report=Mock())
-    model.frames = {
-        NELE: frames(events, "generate", [1000, 920]),
-        ANTON: frames(events, "generate", [2400]),
-    }
+    chunk_frames = iter(
+        [frames(events, "generate", [1000, 920]), frames(events, "generate", [2400])]
+    )
+    fake_stream = model.stream
+
+    def stream(text, *, voice):
+        # Each chunk streams its own frames. The fake model keys frames by voice.
+        model.frames = {voice: next(chunk_frames)}
+        return fake_stream(text, voice=voice)
+
+    model.stream = stream
     monkeypatch.setattr(service, "load_tts", lambda **kwargs: model)
     monkeypatch.setattr(RecordingWriter, "events", events)
     monkeypatch.setattr(service, "PCMWriter", RecordingWriter)
@@ -322,7 +323,7 @@ def test_frames_stream_to_pcm_with_sample_boundaries(tmp_path, monkeypatch):
         ("encoding", 2),
     ]
     assert [(text, voice) for text, voice, _ in model.streams] == [
-        ("One\n\nErstens.", NELE),
+        ("One\n\nErstens.", ANTON),
         ("Two\n\nZweitens.", ANTON),
     ]
     assert all(stream.closed for _, _, stream in model.streams)

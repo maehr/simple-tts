@@ -235,11 +235,13 @@ def test_output_format_resolution(
         ["--chapter-level", "0"],
         ["--chapter-level", "7"],
         ["--voice", ""],
+        ["--voice", " "],
         ["--voice", "Zoey,"],
         ["--voice", "Zoey,unknown"],
+        ["--voice", "Zoey,Hadley"],
         ["--voice", "af_bella"],
         ["--voice", "Zoey", "--language", "de"],
-        ["--voice", "Nele,Zoey", "--language", "de"],
+        ["--voice", "Nele,Anton", "--language", "de"],
         ["--voice", "nbpkqmvs3cjeq2j8"],
         ["--language", "it"],
         ["--language", "pt"],
@@ -275,6 +277,12 @@ def test_rejected_options_precede_synthesis(conversion, monkeypatch, arguments):
     [
         (["--voice", "Zoey", "--language", "de"], "'Zoey' is English (en)"),
         (["--voice", "Unknown"], "Unknown voice 'Unknown'"),
+        (
+            ["-l", "de", "-v", "Nele,Anton"],
+            "Voice 'Nele,Anton' contains a comma. Each conversion uses one voice. "
+            "Voice rotation is removed.",
+        ),
+        (["--voice", ""], "The voice name or voice ID must not be empty."),
         (["--language", "it"], "Unsupported language 'it'"),
         (["--duration-delta", "nan"], "Duration delta must be from -0.3"),
     ],
@@ -567,8 +575,18 @@ def test_real_cli_embedded_chapters(tmp_path, format_type):
     assert {path.name for path in tmp_path.iterdir()} == {source.name, output.name}
 
 
-def test_voice_rotation_reuses_one_model(conversion, monkeypatch):
-    """Every section retains one voice across chunks and cycles in order."""
+@pytest.mark.parametrize(
+    ("arguments", "name", "voice_id"),
+    [
+        ([], "Nele", NELE),
+        (["-v", " anton "], "Anton", ANTON),
+        (["--voice", ANTON], "Anton", ANTON),
+    ],
+)
+def test_one_voice_speaks_every_chapter(
+    conversion, monkeypatch, arguments, name, voice_id
+):
+    """One model and one voice serve every chunk of every chapter."""
     import numpy as np
 
     from simple_tts.converter import ExtractedDocument, Section
@@ -597,13 +615,12 @@ def test_voice_rotation_reuses_one_model(conversion, monkeypatch):
         service, "encode_pcm", lambda pcm, output, *args: output.touch()
     )
     result = runner.invoke(
-        app,
-        ["convert", str(source), "--language", "de", "-v", " Nele, anton ", "-y"],
+        app, ["convert", str(source), "--language", "de", *arguments, "-y"]
     )
     assert result.exit_code == 0, result.output
-    assert "Voice: Nele, Anton" in plain(result.output)
+    assert f"Voice: {name} " in plain(result.output)
     assert loaded == ["de"]
-    assert spoken == [NELE] * 2 + [ANTON] * 2 + [NELE] * 2
+    assert spoken == [voice_id] * 6
 
 
 def test_output_directory_collision_precedes_synthesis(conversion, monkeypatch):
@@ -621,8 +638,8 @@ def test_output_directory_collision_precedes_synthesis(conversion, monkeypatch):
     assert source.is_file()
 
 
-def test_confirmation_lists_each_narrator(conversion, monkeypatch):
-    """The checkpoint identifies every narrator before conversion starts."""
+def test_confirmation_shows_the_voice(conversion, monkeypatch):
+    """The checkpoint identifies the one voice before conversion starts."""
     import numpy as np
 
     service, source = conversion
@@ -638,7 +655,7 @@ def test_confirmation_lists_each_narrator(conversion, monkeypatch):
             "--language",
             "de",
             "--voice",
-            "Nele,Anton",
+            "Anton",
             "--duration-delta",
             "-0.1",
         ],
@@ -647,8 +664,9 @@ def test_confirmation_lists_each_narrator(conversion, monkeypatch):
     assert result.exit_code == 0, result.output
     clean = plain(result.output)
     assert "Language German (de)" in clean
-    assert f"Nele ({NELE}): Nele test voice." in clean
-    assert f"Anton ({ANTON}): Anton test voice." in clean
+    assert f"Voice Anton ({ANTON}): Anton test voice." in clean
+    assert clean.count("Voice Anton") == 1
+    assert "Nele" not in clean
     assert "Duration Delta -0.1" in clean
     # Only the summary's speed ratio remains. The speed setting is gone.
     assert clean.count("Speed") == clean.count("Speed Ratio") == 1

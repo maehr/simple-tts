@@ -39,7 +39,7 @@ from simple_tts.voices import (
     LANGUAGES,
     available_voices,
     load_catalog,
-    resolve_voices,
+    resolve_voice,
 )
 
 pytestmark = pytest.mark.model
@@ -55,7 +55,6 @@ DEFAULTS = {
     "es": ("Noa", "b6FvJAiokjdqIti4"),
     "fr": ("Noémie", "FXxJ9mANRq6BCTX5"),
 }
-NELE = DEFAULTS["de"][1]
 ANTON = "3ZKKapPOvuWFcw9f"
 # Voices per language in the pinned catalogue (findings, section 1).
 CATALOG_COUNTS = {"en": 37, "de": 13, "es": 25, "fr": 15, "pt": 12}
@@ -218,7 +217,7 @@ def convert(
     source: Path,
     *,
     language: str,
-    voices: tuple[str, ...] = (),
+    voice: str | None = None,
     duration_delta: float = 0.0,
     format_type: str = "wav",
     name: str = "book",
@@ -229,7 +228,7 @@ def convert(
     request = ConversionRequest(
         input_file=source,
         language=language,
-        voices=voices,
+        voice=voice,
         duration_delta=duration_delta,
         output=folder / f"{name}.{format_type}",
         device=DEVICE,
@@ -326,7 +325,7 @@ def test_catalogue_lists_native_default_voices(catalog_entries):
         entry = by_id[voice_id]
         assert (entry["name"], entry["language"]) == (name, language)
         assert entry["description"]
-        (voice,) = resolve_voices((), language)
+        voice = resolve_voice(None, language)
         assert (voice.name, voice.voice_id, voice.language) == (
             name,
             voice_id,
@@ -355,7 +354,7 @@ def test_narration_fixture_converts(reuse_models, calls, tools, tmp_path, langua
     """A three-chapter fixture gives complete 24 kHz mono audio."""
     prepared, result = convert(tmp_path, FIXTURES / f"{language}.md", language=language)
     name, voice_id = DEFAULTS[language]
-    assert [voice.name for voice in prepared.voices] == [name]
+    assert prepared.voice.name == name
     assert {call.voice for call in calls} == {voice_id}
     # Step 01 used 4 or 5 chunks of at most 1000 characters.
     assert len(prepared.sections) == 3
@@ -383,22 +382,15 @@ def test_narration_fixture_converts(reuse_models, calls, tools, tmp_path, langua
 
 
 @pytest.mark.parametrize("format_type", ["m4b", "mp4"])
-def test_rotation_marks_chapters(reuse_models, calls, tools, tmp_path, format_type):
-    """Nele and Anton rotate per chapter, and the markers match the samples."""
+def test_one_voice_marks_chapters(reuse_models, calls, tools, tmp_path, format_type):
+    """Anton speaks both chapters, and the markers match the samples."""
     source = two_chapters("de", tmp_path)
     prepared, result = convert(
-        tmp_path,
-        source,
-        language="de",
-        voices=("nele", "Anton"),
-        format_type=format_type,
+        tmp_path, source, language="de", voice="anton", format_type=format_type
     )
-    assert [(voice.name, voice.voice_id) for voice in prepared.voices] == [
-        ("Nele", NELE),
-        ("Anton", ANTON),
-    ]
-    first, second = (chunks for _, chunks in prepared.sections)
-    assert [call.voice for call in calls] == [NELE] * len(first) + [ANTON] * len(second)
+    assert (prepared.voice.name, prepared.voice.voice_id) == ("Anton", ANTON)
+    assert len(prepared.sections) == 2
+    assert [call.voice for call in calls] == [ANTON] * len(prepared.chunks)
     check_samples(prepared, result, calls)
     check_markers(prepared.output, result)
     assert [chapter.title for chapter in result.chapters] == [
@@ -452,14 +444,14 @@ def test_mismatched_voice_is_rejected(catalog, language, voice, spoken):
     label = f"{LANGUAGES[language]} ({language})"
     message = f"is {spoken}, but the narration language is {label}"
     with pytest.raises(ValueError, match=re.escape(message)):
-        resolve_voices((voice,), language)
+        resolve_voice(voice, language)
 
 
 def test_unsupported_catalogue_language_is_rejected(catalog_entries, catalog):
     """A Portuguese catalogue voice is never a narration voice."""
     name = next(e["name"] for e in catalog_entries if e["language"] == "pt")
     with pytest.raises(ValueError, match=r"an unsupported language \(pt\)"):
-        resolve_voices((name,), "es")
+        resolve_voice(name, "es")
 
 
 def test_cli_rejects_mismatch_before_synthesis(catalog, monkeypatch, tmp_path):
@@ -522,14 +514,14 @@ def closed_port() -> int:
         return connection.getsockname()[1]
 
 
-def test_uncached_rotation_voice_fails_at_its_first_chapter(
+def test_uncached_voice_fails_at_the_first_chunk(
     real_ptts, phonon, calls, tools, tmp_path, monkeypatch
 ):
-    """Document the download risk of the second voice in a rotation.
+    """An uncached voice without a network fails at the first chunk.
 
-    ptts downloads a catalogue voice (256 KB) at its first use. The second
-    voice of a rotation starts in chapter 2. Offline and without that voice
-    in the cache, the conversion fails there and publishes no file.
+    ptts downloads a catalogue voice (256 KB) before its first frame. Offline
+    and without that voice in the cache, the first chunk fails before any
+    audio exists. The conversion publishes no file.
     """
     # Skip early when the device or the model is not available.
     phonon("de")
@@ -538,14 +530,13 @@ def test_uncached_rotation_voice_fails_at_its_first_chapter(
     catalogue = (
         tts.hub_cache() / "models--gradium--phonon-voices" / "snapshots" / revision
     )
-    nele = catalogue / "voices" / f"{NELE}.safetensors"
-    if not snapshot.is_dir() or not nele.is_file():
-        pytest.skip("The model snapshot or the Nele voice is not in the cache.")
+    if not snapshot.is_dir() or not (catalogue / "voices.jsonl").is_file():
+        pytest.skip("The model snapshot or the voice catalogue is not in the cache.")
+    # The copy holds the catalogue, but no voice file.
     home = tmp_path / "hf"
     copy = home / "hub" / "models--gradium--phonon-voices" / "snapshots" / revision
-    (copy / "voices").mkdir(parents=True)
+    copy.mkdir(parents=True)
     shutil.copyfile(catalogue / "voices.jsonl", copy / "voices.jsonl")
-    shutil.copyfile(nele, copy / "voices" / nele.name)
     # A new HF_HOME holds no token. A closed local port stands in for the Hub.
     for name in ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_TOKEN_PATH"] + [
         "HF_HUB_CACHE",
@@ -563,19 +554,19 @@ def test_uncached_rotation_voice_fails_at_its_first_chapter(
     request = ConversionRequest(
         input_file=two_chapters("de", tmp_path),
         language="de",
-        voices=("Nele", "Anton"),
+        voice="Anton",
         output=tmp_path / "book.m4b",
         device=DEVICE,
     )
+    # The cached catalogue resolves the voice without a network request.
     prepared = prepare_conversion(request, scratch)
+    assert prepared.voice.voice_id == ANTON
     staged = scratch / "staged.m4b"
     with pytest.raises(RuntimeError, match=rf"(?s)cannot download.*{ANTON}"):
         execute_conversion(prepared, scratch, staged)
 
-    first = prepared.sections[0][1]
-    assert [call.voice for call in calls] == [NELE] * len(first) + [ANTON]
-    assert all(call.samples for call in calls[:-1])
-    assert calls[-1].samples == 0
+    assert [(call.voice, call.samples) for call in calls] == [(ANTON, 0)]
+    assert not (scratch / "narration.f32le").stat().st_size
     assert not staged.exists()
     assert not prepared.output.exists()
     assert not (copy / "voices" / f"{ANTON}.safetensors").exists()

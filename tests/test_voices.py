@@ -12,11 +12,11 @@ from simple_tts.voices import (
     Voice,
     available_voices,
     check_language,
+    check_voice,
     language_code,
     load_catalog,
     normalize_name,
-    parse_voices,
-    resolve_voices,
+    resolve_voice,
 )
 
 
@@ -62,16 +62,24 @@ def test_normalize_name_ignores_case_and_accents(value):
     assert normalize_name(value) == "noemie"
 
 
-def test_parse_voices_trims_names():
-    """Rotation entries lose surrounding space."""
-    assert parse_voices(" Nele , Anton ") == ("Nele", "Anton")
+@pytest.mark.parametrize("value", ["Nele", " Anton ", "2A2fFf8SkDEJ8nzx"])
+def test_check_voice_accepts_one_value(value):
+    """One name or voice ID passes the syntax check."""
+    check_voice(value)
 
 
-@pytest.mark.parametrize("value", ["", " ", "Nele,", ",Nele", "Nele,,Anton"])
-def test_parse_voices_rejects_empty_entries(value):
-    """Empty rotation entries are syntax errors."""
+@pytest.mark.parametrize("value", ["", " ", "\t"])
+def test_check_voice_rejects_an_empty_value(value):
+    """An empty voice is a syntax error."""
     with pytest.raises(ValueError, match="must not be empty"):
-        parse_voices(value)
+        check_voice(value)
+
+
+@pytest.mark.parametrize("value", ["Nele,Anton", " Nele, Anton ", "Nele,", ","])
+def test_check_voice_rejects_a_rotation(value):
+    """A comma-separated list fails, because each conversion uses one voice."""
+    with pytest.raises(ValueError, match="one voice. Voice rotation is removed"):
+        check_voice(value)
 
 
 def test_load_catalog_reads_default_catalogue_metadata(ptts):
@@ -159,14 +167,16 @@ def test_available_voices_filters_one_language():
 )
 def test_default_voice_follows_the_language(language, name, voice_id):
     """No voice selects the native default voice of the language."""
-    (voice,) = resolve_voices((), language)
+    voice = resolve_voice(None, language)
     assert (voice.name, voice.voice_id, voice.language) == (name, voice_id, language)
 
 
-def test_rotation_keeps_order_and_repeats():
-    """Two German voices rotate in the given order."""
-    resolved = resolve_voices(("Nele", "anton", "NELE"), "de")
-    assert [voice.name for voice in resolved] == ["Nele", "Anton", "Nele"]
+@pytest.mark.parametrize("value", ["Anton", "anton", " ANTON ", "3ZKKapPOvuWFcw9f"])
+def test_explicit_voice_replaces_the_default(value):
+    """An explicit German voice replaces the default voice Nele."""
+    voice = resolve_voice(value, "de")
+    assert voice == Voice("Anton", "3ZKKapPOvuWFcw9f", "de", "Anton test voice.")
+    assert not voice.is_default
 
 
 @pytest.mark.parametrize(
@@ -174,15 +184,14 @@ def test_rotation_keeps_order_and_repeats():
 )
 def test_names_and_voice_ids_resolve(value):
     """Names ignore case and accents. Voice IDs match exactly."""
-    (voice,) = resolve_voices((value,), "fr")
-    assert voice.name == "Noémie"
+    assert resolve_voice(value, "fr").name == "Noémie"
 
 
 @pytest.mark.parametrize("value", ["fxxj9manrq6bctx5", "Unknown", "af_bella"])
 def test_unknown_voices_and_lowercase_ids_are_rejected(value):
     """Lowercase voice IDs fail here first, because ptts rejects them too."""
     with pytest.raises(ValueError, match=f"Unknown voice '{value}'.*--language fr"):
-        resolve_voices((value,), "fr")
+        resolve_voice(value, "fr")
 
 
 @pytest.mark.parametrize(
@@ -196,21 +205,17 @@ def test_unknown_voices_and_lowercase_ids_are_rejected(value):
 def test_language_mismatch_is_rejected(value, language, message):
     """A voice never narrates another language without notice."""
     with pytest.raises(ValueError, match=message):
-        resolve_voices((value,), language)
-
-
-def test_mismatch_in_a_rotation_is_rejected():
-    """Every voice of a rotation must match the narration language."""
-    with pytest.raises(ValueError, match="'Zoey' is English"):
-        resolve_voices(("Nele", "Zoey"), "de")
+        resolve_voice(value, language)
 
 
 def test_unknown_language_and_syntax_fail_before_the_catalogue(ptts):
     """Invalid requests do not read the catalogue."""
     with pytest.raises(ValueError, match="Unsupported language"):
-        resolve_voices((), "it")
+        resolve_voice(None, "it")
     with pytest.raises(ValueError, match="must not be empty"):
-        resolve_voices(("Nele", " "), "de")
+        resolve_voice(" ", "de")
+    with pytest.raises(ValueError, match="Voice rotation is removed"):
+        resolve_voice("Nele,Anton", "de")
     ptts.catalog_voices.assert_not_called()
 
 
@@ -218,23 +223,23 @@ def test_missing_default_voice_is_an_error():
     """An absent default never falls back to another voice or language."""
     catalog = [Voice("Zoey", "z", "en"), Voice("Nele", "n", "pt")]
     with pytest.raises(ValueError, match="default German \\(de\\) voice 'Nele'"):
-        resolve_voices((), "de", catalog)
+        resolve_voice(None, "de", catalog)
 
 
 def test_missing_catalogue_is_an_error(ptts):
     """Resolution reports a missing catalogue, also for default voices."""
     ptts.catalog_voices.side_effect = OSError("offline")
     with pytest.raises(RuntimeError, match="voice catalogue"):
-        resolve_voices((), "de")
+        resolve_voice(None, "de")
 
 
 def test_shared_name_prefers_the_narration_language():
     """A name in two languages selects the voice of the narration language."""
     catalog = [Voice("Alex", "alex-en", "en"), Voice("Alex", "alex-es", "es")]
-    assert resolve_voices(("alex",), "es", catalog)[0].voice_id == "alex-es"
-    assert resolve_voices(("Alex",), "en", catalog)[0].voice_id == "alex-en"
+    assert resolve_voice("alex", "es", catalog).voice_id == "alex-es"
+    assert resolve_voice("Alex", "en", catalog).voice_id == "alex-en"
     with pytest.raises(ValueError, match="'Alex' is English"):
-        resolve_voices(("Alex",), "de", catalog)
+        resolve_voice("Alex", "de", catalog)
 
 
 def test_locale_language_metadata_resolves(ptts):
@@ -242,10 +247,11 @@ def test_locale_language_metadata_resolves(ptts):
     ptts.catalog_voices.return_value = [
         {"name": "Lea", "voice_id": "id-lea", "language": "de-DE"}
     ]
-    assert resolve_voices(("Lea",), "de") == (Voice("Lea", "id-lea", "de"),)
+    assert resolve_voice("Lea", "de") == Voice("Lea", "id-lea", "de")
 
 
-def test_module_has_no_kokoro_voices():
-    """The Kokoro voice table is gone."""
-    assert not hasattr(voices, "VOICES")
-    assert not hasattr(voices, "get_voice_info")
+def test_module_has_no_kokoro_voices_or_rotation():
+    """The Kokoro voice table and the rotation helpers are gone."""
+    removed = ["VOICES", "get_voice_info", "parse_voices", "check_voice_names"]
+    for name in [*removed, "resolve_voices"]:
+        assert not hasattr(voices, name)

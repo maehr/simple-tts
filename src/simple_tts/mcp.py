@@ -76,7 +76,7 @@ def create_server(workspace: Path, *, manager: JobManager | None = None) -> Fast
         instructions=(
             "Convert prepared documents or Markdown text to local audio. "
             "Start one job, poll get_conversion, and cancel it when needed. "
-            "Select one narration language per job. Voices must match it. "
+            "Select one narration language per job. The voice must match it. "
             "Paths are relative to the configured workspace. "
             "File URIs require access to the local filesystem."
         ),
@@ -123,7 +123,7 @@ def create_server(workspace: Path, *, manager: JobManager | None = None) -> Fast
         input_file: str | None = None,
         text: str | None = None,
         language: Language = "en",
-        voices: list[str] = [],
+        voice: str | None = None,
         duration_delta: Annotated[
             float, Field(ge=DURATION_DELTA_RANGE[0], le=DURATION_DELTA_RANGE[1])
         ] = 0.0,
@@ -135,9 +135,9 @@ def create_server(workspace: Path, *, manager: JobManager | None = None) -> Fast
         """Start one conversion from exactly one document path or Markdown text.
 
         Poll get_conversion for progress and the final local file URI.
-        Voices are catalogue names or voice IDs and rotate once per chapter.
-        Omit voices to use the default voice of the language.
-        The job fails when a voice is unknown or has another language.
+        The voice is one catalogue name or voice ID for every chapter.
+        Omit it to use the default voice of the language.
+        The job fails when the voice is unknown or has another language.
         Negative duration_delta values speak faster, positive values slower.
         Existing outputs are rejected.
         """
@@ -147,7 +147,7 @@ def create_server(workspace: Path, *, manager: JobManager | None = None) -> Fast
                     input_file=Path(input_file) if input_file is not None else None,
                     text=text,
                     language=language,
-                    voices=tuple(voices),
+                    voice=voice,
                     duration_delta=duration_delta,
                     format_type=format,
                     output=Path(output) if output is not None else None,

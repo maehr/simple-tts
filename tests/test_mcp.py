@@ -45,8 +45,9 @@ def test_discovery_schemas_and_defaults(tmp_path, ptts):
             props = schema["properties"]
             assert props["language"]["default"] == DEFAULT_LANGUAGE
             assert props["language"]["enum"] == list(LANGUAGES)
-            assert props["voices"]["default"] == []
-            assert "minItems" not in props["voices"]
+            assert props["voice"]["default"] is None
+            assert props["voice"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
+            assert "voices" not in props
             assert props["duration_delta"]["default"] == 0.0
             assert props["duration_delta"]["minimum"] == -0.3
             assert props["duration_delta"]["maximum"] == 0.3
@@ -168,9 +169,11 @@ def test_tool_conversion_and_polling(tmp_path, source):
         {},
         {"input_file": "book.md", "text": "Hello."},
         {"text": ""},
-        {"text": "Hello.", "voices": [""]},
-        {"text": "Hello.", "voices": ["Nele,Anton"]},
-        {"text": "Hello.", "voices": "Zoey"},
+        {"text": "Hello.", "voice": ""},
+        {"text": "Hello.", "voice": " "},
+        {"text": "Hello.", "voice": "Nele,Anton"},
+        {"text": "Hello.", "voice": ["Nele", "Anton"]},
+        {"text": "Hello.", "voices": ["Zoey"]},
         {"text": "Hello.", "language": "it"},
         {"text": "Hello.", "language": "pt"},
         {"text": "Hello.", "language": "DE"},
@@ -203,6 +206,21 @@ def test_request_failures_are_tool_errors(tmp_path, arguments):
             assert manager.records == {}
 
     asyncio.run(scenario())
+
+
+def test_voice_rotation_is_a_tool_error(tmp_path, ptts):
+    """A comma-separated voice fails before a job starts or a catalogue read."""
+
+    async def scenario():
+        manager = JobManager(tmp_path)
+        async with Client(create_server(tmp_path, manager=manager)) as client:
+            arguments = {"text": "Hallo.", "language": "de", "voice": "Nele,Anton"}
+            with pytest.raises(ToolError, match="Voice rotation is removed"):
+                await client.call_tool("start_conversion", arguments)
+            assert manager.records == {}
+
+    asyncio.run(scenario())
+    ptts.catalog_voices.assert_not_called()
 
 
 async def run_job(client, manager, arguments):
@@ -240,7 +258,7 @@ def test_job_language_rate_and_device_reach_ptts(
                 {
                     "text": "# Eins\n\nHallo.\n\n# Zwei\n\nTschüss.",
                     "language": "de",
-                    "voices": ["Nele", "anton"],
+                    "voice": "anton",
                     "duration_delta": -0.2,
                     "device": device,
                 },
@@ -259,7 +277,8 @@ def test_job_language_rate_and_device_reach_ptts(
                     "conditions": {"duration_delta": -0.2},
                 }
             ]
-            assert record["voices"] == ["2A2fFf8SkDEJ8nzx", "3ZKKapPOvuWFcw9f"]
+            # One explicit voice speaks both chapters.
+            assert record["voices"] == ["3ZKKapPOvuWFcw9f"] * 2
             assert [chapter["title"] for chapter in status["result"]["chapters"]] == [
                 "Eins",
                 "Zwei",
@@ -275,9 +294,9 @@ def test_job_language_rate_and_device_reach_ptts(
 @pytest.mark.parametrize(
     ("arguments", "message"),
     [
-        ({"voices": ["Unknown"]}, "Unknown voice 'Unknown'"),
-        ({"language": "de", "voices": ["Zoey"]}, "'Zoey' is English (en)"),
-        ({"language": "fr", "voices": ["Noémie", "Noa"]}, "'Noa' is Spanish (es)"),
+        ({"voice": "Unknown"}, "Unknown voice 'Unknown'"),
+        ({"language": "de", "voice": "Zoey"}, "'Zoey' is English (en)"),
+        ({"language": "fr", "voice": "Noa"}, "'Noa' is Spanish (es)"),
     ],
 )
 def test_voice_errors_are_job_status_data(tmp_path, ptts, arguments, message):

@@ -15,8 +15,7 @@ See [License](#license).
 
 - Read Markdown, QMD, RMD, TXT, DOCX, EPUB, RST, and HTML files.
 - Narrate English, German, Spanish, or French text. Each conversion uses one language.
-- Select catalogue voices by name or by voice ID. Each language has a default voice.
-- Rotate voices of the same language across chapters.
+- Select one catalogue voice by name or by voice ID. Each language has a default voice.
 - Change the speaking rate with `--duration-delta`.
 - Write M4A, M4B, MP4, MP3, WAV, or Opus audio.
 - Add embedded chapters to M4B and MP4 files.
@@ -94,7 +93,7 @@ Each file downloads one time, at its first use:
 | Voice catalogue `voices.jsonl` | 33 KB | The first `voices` command, `list_voices` call, or conversion. |
 | 8-bit weights `model.q8.gguf` | 74.6 MB | The first conversion with `--device auto` or `cpu`. |
 | f32 weights `model.safetensors` | 121.7 MB | The first conversion with `--device mps` or `cuda`. |
-| One voice | 256 KB | The first chapter that uses the voice. |
+| One voice | 256 KB | The first conversion that uses the voice. |
 
 The first model download also adds `config.json`, `tokenizer.json`, and `default-voice.safetensors`.
 
@@ -126,7 +125,7 @@ To prepare for work without a network, do these steps while you are online:
 2. Convert a short text with each voice that you plan to use.
 3. If you plan to use Metal, repeat step 2 with `--device mps`.
 
-If a voice is not in the cache and the network is not available, the conversion stops at the first chapter of that voice.
+If the voice is not in the cache and the network is not available, the conversion stops at the first text chunk.
 The command then writes no output file.
 
 ### Use a local checkpoint
@@ -215,7 +214,8 @@ simple-tts convert essay.md --language en --voice Zoey -y
 ### Select a language and a voice
 
 Use `--language` or `-l` to select the narration language.
-Use `--voice` or `-v` to select a voice of that language.
+Use `--voice` or `-v` to select one voice of that language.
+Each conversion uses one voice for all chapters.
 
 | Code | Language | Default voice | Catalogue voices |
 | --- | --- | --- | --- |
@@ -241,6 +241,7 @@ The voice must speak the narration language.
 simple-tts never replaces a voice with a voice of a different language.
 For example, `-l de -v Zoey` fails before extraction.
 The error names both languages and the command that lists the German voices.
+A value with a comma, such as `-v Nele,Anton`, also fails before extraction.
 
 The catalogue also contains Portuguese voices.
 simple-tts does not support Portuguese in this release.
@@ -256,22 +257,6 @@ The list shows the name, the voice ID, the language, and the catalogue descripti
 The text `(default)` marks the default voice of each language.
 The catalogue descriptions call Zoey and Noémie playful and Noa bubbly.
 Read the descriptions to select a different narrator for long texts.
-
-### Rotate narrator voices
-
-Separate voice names or IDs with commas to rotate narrators across chapters.
-
-```bash
-simple-tts convert buch.md --language de --voice Nele,Anton --format mp4
-```
-
-The first section uses the first voice.
-An introduction counts as a section.
-Each later section uses the next voice, then the rotation repeats.
-Every chunk within a section uses the same voice.
-All voices must speak the narration language.
-The command rejects unknown voices, empty list entries, and voices of a different language before extraction.
-simple-tts loads the model one time for all voices of a conversion.
 
 ### Change the speaking rate
 
@@ -405,7 +390,7 @@ simple-tts convert --help
 | Option | Purpose | Default |
 | --- | --- | --- |
 | `-l`, `--language` | Select the narration language: `en`, `de`, `es`, or `fr`. | `en` |
-| `-v`, `--voice` | Select catalogue voice names or IDs, separated by commas, for chapter rotation. | The default voice of the language |
+| `-v`, `--voice` | Select one catalogue voice name or voice ID. | The default voice of the language |
 | `-o`, `--output` | Set the output path and infer its format. | Beside the input |
 | `--duration-delta` | Set the speaking rate from -0.3 to 0.3. Negative values speak faster. | `0.0` |
 | `-f`, `--format` | Select `m4a`, `m4b`, `mp4`, `mp3`, `wav`, or `opus`. | `m4a` |
@@ -435,6 +420,7 @@ simple-tts check-deps
 | `Phonon cannot find a checkpoint or voice: ...` | Make sure that `SIMPLE_TTS_MODEL` points to a complete checkpoint folder. |
 | `Unknown voice '...'. List voices with: simple-tts voices --language de` | The catalogue does not contain this name or voice ID. Run the command in the message and select a listed voice. |
 | `Voice 'Zoey' is English (en), but the narration language is German (de).` | Select a voice of the narration language, or change `--language`. |
+| `Voice 'Nele,Anton' contains a comma. Each conversion uses one voice. Voice rotation is removed.` | Select one voice. Version 0.4.0 removes voice rotation. |
 | `Requested device 'mps' is unavailable in this ptts build.` | The installed `ptts` build does not support this GPU. Use `--device auto`. |
 | `No such option: --speed` | Use `--duration-delta`. See [Change the speaking rate](#change-the-speaking-rate). |
 
@@ -462,7 +448,7 @@ Diagnostics use stderr.
 The server reserves stdout for MCP messages.
 The server does not read the voice catalogue or load the model at startup.
 The first `list_voices` call or conversion can download the voice catalogue.
-The first conversion can download the model and its voices.
+The first conversion can download the model and the voice.
 [Get access to the model](#get-access-to-the-model) before the first conversion.
 
 ### Configure a client
@@ -531,13 +517,13 @@ If the catalogue is not in the cache and the network is not available, `list_voi
 
 Call `start_conversion` with exactly one source: `text` or `input_file`.
 The server reads supplied text as Markdown through Pandoc.
-Use these tool arguments for German text with two rotating voices.
+Use these tool arguments for German text with the voice Anton.
 
 ```json
 {
   "text": "# Einleitung\n\nDas ist vorbereiteter Text.\n\n# Ergebnisse\n\nDas sind die Ergebnisse.",
   "language": "de",
-  "voices": ["Nele", "Anton"],
+  "voice": "Anton",
   "format": "m4b"
 }
 ```
@@ -549,7 +535,7 @@ Use these tool arguments for a French document within the workspace.
   "input_file": "livre.md",
   "output": "livre.m4b",
   "language": "fr",
-  "voices": ["Noémie"],
+  "voice": "Noémie",
   "duration_delta": -0.1,
   "chapter_level": 1,
   "device": "auto"
@@ -561,7 +547,7 @@ Use these tool arguments for a French document within the workspace.
 | `input_file` | A document path in the workspace. | None |
 | `text` | Markdown text. | None |
 | `language` | `en`, `de`, `es`, or `fr`, in lower case. | `"en"` |
-| `voices` | A list of voice names or voice IDs. An empty list selects the default voice of the language. | `[]` |
+| `voice` | One voice name or voice ID for all chapters. Omit it to select the default voice of the language. | None |
 | `duration_delta` | A number from -0.3 to 0.3. | `0.0` |
 | `format` | `m4a`, `m4b`, `mp4`, `mp3`, `wav`, or `opus`. | None |
 | `output` | An output path in the workspace. | None |
@@ -607,8 +593,8 @@ States are `running`, `cancelling`, `succeeded`, `failed`, and `cancelled`.
 
 The server checks the request syntax before it starts a job.
 Syntax errors are MCP tool errors.
-Examples are a missing source, an unsupported language, an empty voice name, a `duration_delta` outside the range, and an unknown argument such as `speed`.
-The job worker checks the voices against the catalogue.
+Examples are a missing source, an unsupported language, an empty voice, a voice with a comma, a `duration_delta` outside the range, and an unknown argument such as `speed`.
+The job worker checks the voice against the catalogue.
 An unknown voice or a voice of a different language makes the job fail.
 The job then has the state `failed`, and its `error` field gives the reason.
 Model, device, and download errors also appear in the `error` field.
@@ -681,9 +667,15 @@ CI also checks the CLI without the MCP extra.
 
 Tests with the real model are optional.
 They need access to the gated model and the variable `SIMPLE_TTS_MODEL_TESTS=1`.
+They use the voices Zoey, Nele, Anton, Noa, and Noémie.
+Without a network, the model and these voices must be in the cache.
+Set `SIMPLE_TTS_TEST_DEVICE` to `cpu`, `mps`, or `cuda` to select the device.
+The default is `cpu`, the CPU with 8-bit weights.
+`mps` and `cuda` use f32 weights.
 
 ```bash
 SIMPLE_TTS_MODEL_TESTS=1 uv run --locked --group dev --extra mcp pytest -m model
+SIMPLE_TTS_MODEL_TESTS=1 SIMPLE_TTS_TEST_DEVICE=mps uv run --locked --group dev --extra mcp pytest -m model
 ```
 
 Never commit model weights, voice files, cache files, or generated audio.
