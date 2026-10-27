@@ -7,9 +7,23 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from simple_tts import __version__
 from simple_tts.cli import app, format_duration
+from tests.workers import one_frame
 
 runner = CliRunner()
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+NELE = "2A2fFf8SkDEJ8nzx"
+MCP_HINT = (
+    "Install MCP support: pip install "
+    f'"simple-tts[mcp] @ git+https://github.com/maehr/simple-tts@v{__version__}"'
+)
+ANTON = "3ZKKapPOvuWFcw9f"
+
+
+def plain(output):
+    """Remove ANSI codes and borders, and join wrapped table and help lines."""
+    return " ".join(ANSI.sub("", output).replace("│", " ").split())
 
 
 class TestFormatDuration:
@@ -40,23 +54,54 @@ class TestCLIVersion:
         result = runner.invoke(app, ["version"])
         assert result.exit_code == 0
         assert "simple-tts" in result.stdout
-        from simple_tts import __version__
-
         assert __version__ in result.stdout
 
 
 class TestCLIVoices:
     """Tests for the voices command."""
 
-    def test_voices_command(self):
-        """Test that voices command lists available voices."""
+    def test_voices_command(self, ptts):
+        """The command lists catalogue voices of the four languages only."""
         result = runner.invoke(app, ["voices"])
-        assert result.exit_code == 0
-        # Strip ANSI codes for checking
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        clean = ansi_escape.sub("", result.stdout)
-        assert "af_bella" in clean
-        assert "English" in clean
+        assert result.exit_code == 0, result.output
+        clean = plain(result.stdout)
+        for name in ["Zoey (default)", "Hadley", "Nele (default)", "Anton"]:
+            assert name in clean
+        assert "Noa (default)" in clean
+        assert "Noémie (default)" in clean
+        assert "Hadley (default)" not in clean
+        assert NELE in clean
+        assert "German (de)" in clean
+        assert "Nele test voice." in clean
+        assert "Manuela-Lu" not in clean
+        assert "af_bella" not in clean
+        ptts.catalog_voices.assert_called_once_with()
+        ptts.TTS.assert_not_called()
+
+    def test_voices_filter_by_language(self):
+        """A language filter shows only the voices of that language."""
+        result = runner.invoke(app, ["voices", "--language", "DE"])
+        assert result.exit_code == 0, result.output
+        clean = plain(result.stdout)
+        assert "Nele" in clean
+        assert "Anton" in clean
+        assert "Zoey" not in clean
+
+    @pytest.mark.parametrize("arguments", [["--language", "it"], ["-l", "pt"]])
+    def test_voices_rejects_other_languages(self, arguments):
+        """Unsupported languages give an error."""
+        result = runner.invoke(app, ["voices", *arguments])
+        assert result.exit_code == 1
+        assert "Unsupported language" in plain(result.output)
+
+    def test_voices_without_catalogue(self, ptts):
+        """An uncached catalogue without network gives a clear error."""
+        ptts.catalog_voices.side_effect = OSError("cannot fetch voices.jsonl")
+        result = runner.invoke(app, ["voices"])
+        assert result.exit_code == 1
+        clean = plain(result.output)
+        assert "voice catalogue" in clean
+        assert "Connect to the internet once" in clean
 
 
 class TestCLIConvert:
@@ -73,10 +118,27 @@ class TestCLIConvert:
         assert result.exit_code == 0
         assert "Prepared input" in result.stdout
         assert "PDF" not in result.stdout
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        clean = ansi_escape.sub("", result.stdout)
+        clean = plain(result.stdout)
         assert "--voice" in clean
         assert "--yes" in clean
+        assert "--language" in clean
+        assert "en, de, es, or fr" in clean
+        assert "--duration-delta" in clean
+        assert "-0.3<=x<=0.3" in clean
+        assert "cpu (8-bit weights), mps (Metal, f32), or cuda (f32)" in clean
+        assert "[default: cpu]" in clean
+        assert "auto" not in clean
+        assert "--speed" not in clean
+        assert "af_bella" not in clean
+        assert "Kokoro" not in clean
+
+    def test_app_help_names_phonon(self):
+        """The top-level help names the new engine."""
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        clean = plain(result.stdout)
+        assert "Phonon 40M Multilingual" in clean
+        assert "Kokoro" not in clean
 
 
 class TestCLICheckDeps:
@@ -156,7 +218,9 @@ def test_output_format_resolution(
         assert output.parent.parent == source.parent
         output.write_bytes(b"encoded")
 
-    monkeypatch.setattr(service, "synthesize", lambda *args, **kwargs: np.zeros(240))
+    monkeypatch.setattr(
+        service, "stream_speech", one_frame(lambda *args: np.zeros(240))
+    )
     monkeypatch.setattr(service, "encode_pcm", encode)
     arguments = list(arguments)
     if "--output" in arguments:
@@ -174,12 +238,27 @@ def test_output_format_resolution(
         ["--format", "invalid"],
         ["-o", "book.flac"],
         ["--device", "invalid"],
+        ["--device", "auto"],
         ["--chapter-level", "0"],
         ["--chapter-level", "7"],
         ["--voice", ""],
-        ["--voice", "af_bella,"],
-        ["--voice", "af_bella,unknown"],
-        ["--voice", "af_bella,bf_emma"],
+        ["--voice", " "],
+        ["--voice", "Zoey,"],
+        ["--voice", "Zoey,unknown"],
+        ["--voice", "Zoey,Hadley"],
+        ["--voice", "af_bella"],
+        ["--voice", "Zoey", "--language", "de"],
+        ["--voice", "Nele,Anton", "--language", "de"],
+        ["--voice", "nbpkqmvs3cjeq2j8"],
+        ["--language", "it"],
+        ["--language", "pt"],
+        ["--language", "de-DE"],
+        ["--duration-delta", "0.31"],
+        ["--duration-delta", "-0.5"],
+        ["--duration-delta", "nan"],
+        ["--duration-delta", "fast"],
+        ["--speed", "1.2"],
+        ["-s", "1.2"],
         ["--no-vtt"],
         ["--vtt"],
         ["--split"],
@@ -200,6 +279,95 @@ def test_rejected_options_precede_synthesis(conversion, monkeypatch, arguments):
     load.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (
+            ["--voice", "Zoey", "--language", "de"],
+            "Voice 'Zoey' is English (en), but the narration language is German "
+            "(de). List German voices with 'simple-tts voices --language de' or "
+            "the MCP tool list_voices.",
+        ),
+        (
+            ["--voice", "Unknown"],
+            "Unknown voice 'Unknown'. List English voices with "
+            "'simple-tts voices --language en' or the MCP tool list_voices.",
+        ),
+        (
+            ["-l", "de", "-v", "Nele,Anton"],
+            "Voice 'Nele,Anton' contains a comma. Each conversion uses one voice. "
+            "Voice rotation is removed.",
+        ),
+        (["--voice", ""], "The voice name or voice ID must not be empty."),
+        (["--device", "auto"], "Device must be cpu, mps, or cuda."),
+        (["--language", "it"], "Unsupported language 'it'"),
+        (["--duration-delta", "nan"], "Duration delta must be from -0.3"),
+    ],
+)
+def test_option_errors_explain_the_fix(conversion, arguments, message):
+    """Voice, language, and rate errors name the problem."""
+    service, source = conversion
+    result = runner.invoke(app, ["convert", str(source), "-y", *arguments])
+    assert result.exit_code == 1
+    assert message in plain(result.output)
+
+
+@pytest.mark.parametrize(
+    ("language", "name", "voice_id"),
+    [
+        (None, "Zoey", "NbpkqMVS3CJeq2j8"),
+        ("en", "Zoey", "NbpkqMVS3CJeq2j8"),
+        ("de", "Nele", NELE),
+        ("es", "Noa", "b6FvJAiokjdqIti4"),
+        ("FR", "Noémie", "FXxJ9mANRq6BCTX5"),
+    ],
+)
+def test_default_voice_follows_language(
+    conversion, monkeypatch, ptts, language, name, voice_id
+):
+    """An omitted voice selects the native default voice of the language."""
+    from simple_tts import tts
+
+    service, source = conversion
+    monkeypatch.setattr(service, "load_tts", tts.load_tts)
+    monkeypatch.setattr(
+        service, "encode_pcm", lambda pcm, output, *args: output.touch()
+    )
+    arguments = ["--language", language] if language else []
+    result = runner.invoke(app, ["convert", str(source), "-y", *arguments])
+    assert result.exit_code == 0, result.output
+    clean = plain(result.output)
+    code = (language or "en").lower()
+    assert f"Voice: {name}" in clean
+    assert f"({code})" in clean
+    assert ptts.TTS.call_args.kwargs["lang"] == code
+    assert ptts.TTS.call_args.kwargs["conditions"] == {"duration_delta": 0.0}
+
+
+@pytest.mark.parametrize("value", ["-0.3", "-0.15", "0.25", "0.3"])
+def test_duration_delta_reaches_ptts(conversion, monkeypatch, ptts, value):
+    """The rate option becomes the native ptts duration condition."""
+    from simple_tts import tts
+
+    service, source = conversion
+    monkeypatch.setattr(service, "load_tts", tts.load_tts)
+    monkeypatch.setattr(
+        service, "encode_pcm", lambda pcm, output, *args: output.touch()
+    )
+    result = runner.invoke(
+        app,
+        ["convert", str(source), "-y", "-l", "de", "--duration-delta", value],
+    )
+    assert result.exit_code == 0, result.output
+    ptts.TTS.assert_called_once()
+    assert ptts.TTS.call_args.kwargs == {
+        "device": "cpu",
+        "quant": "q8",
+        "lang": "de",
+        "conditions": {"duration_delta": float(value)},
+    }
+
+
 @pytest.mark.parametrize("format_type", ["m4a", "m4b", "mp4", "mp3", "wav", "opus"])
 def test_sample_boundaries(conversion, monkeypatch, format_type):
     """Each chapter begins before its heading and ends at its final sample."""
@@ -213,7 +381,7 @@ def test_sample_boundaries(conversion, monkeypatch, format_type):
     pcm_paths = []
     chapters_seen = []
 
-    def synthesize(pipeline, text, **kwargs):
+    def synthesize(model, text, voice):
         spoken.append(text)
         return np.full(next(lengths), len(spoken), dtype=np.float32)
 
@@ -225,7 +393,7 @@ def test_sample_boundaries(conversion, monkeypatch, format_type):
         assert not source.with_suffix(".vtt").exists()
         output.write_bytes(b"encoded")
 
-    monkeypatch.setattr(service, "synthesize", synthesize)
+    monkeypatch.setattr(service, "stream_speech", one_frame(synthesize))
     monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(
         app,
@@ -263,7 +431,9 @@ def test_missing_headings_warning(conversion, monkeypatch, arguments):
         titles.extend(chapter.title for chapter in chapters)
         output.write_bytes(b"encoded")
 
-    monkeypatch.setattr(service, "synthesize", lambda *args, **kwargs: np.zeros(240))
+    monkeypatch.setattr(
+        service, "stream_speech", one_frame(lambda *args: np.zeros(240))
+    )
     monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(app, ["convert", str(source), "-y", *arguments])
     assert result.exit_code == 0, result.output
@@ -272,7 +442,7 @@ def test_missing_headings_warning(conversion, monkeypatch, arguments):
 
 
 def test_long_conversion_releases_audio_arrays(conversion, monkeypatch):
-    """Hundreds of chunks never retain earlier audio arrays."""
+    """Hundreds of chunks retain at most the last written frame."""
     import weakref
 
     import numpy as np
@@ -290,19 +460,22 @@ def test_long_conversion_releases_audio_arrays(conversion, monkeypatch):
         ),
     )
 
-    def synthesize(*args, **kwargs):
-        assert all(reference() is None for reference in references)
+    def live_frames():
+        return sum(reference() is not None for reference in references)
+
+    def synthesize(*args):
+        assert live_frames() <= 1
         audio = np.zeros(24000, dtype=np.float32)
         references.append(weakref.ref(audio))
         return audio
 
     def encode(pcm, output, format_type, chapters):
-        assert all(reference() is None for reference in references)
+        assert live_frames() <= 1
         assert pcm.stat().st_size == chunk_count * 24000 * 4
         assert chapters[-1].end_sample == chunk_count * 24000
         output.write_bytes(b"encoded")
 
-    monkeypatch.setattr(service, "synthesize", synthesize)
+    monkeypatch.setattr(service, "stream_speech", one_frame(synthesize))
     monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(app, ["convert", str(source), "-y"])
     assert result.exit_code == 0, result.output
@@ -327,7 +500,7 @@ def test_failure_cleanup_and_publication(conversion, monkeypatch, failure_stage)
 
     calls = 0
 
-    def synthesize(*args, **kwargs):
+    def synthesize(*args):
         nonlocal calls
         calls += 1
         if calls == 2 and failure_stage == "cancellation":
@@ -341,7 +514,7 @@ def test_failure_cleanup_and_publication(conversion, monkeypatch, failure_stage)
         raise RuntimeError("encoding error")
 
     monkeypatch.setattr(tempfile, "TemporaryDirectory", track_directory)
-    monkeypatch.setattr(service, "synthesize", synthesize)
+    monkeypatch.setattr(service, "stream_speech", one_frame(synthesize))
     monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(app, ["convert", str(source), "--format", "m4b", "-y"])
     assert result.exit_code != 0
@@ -356,7 +529,7 @@ def test_no_audio_is_an_error(conversion, monkeypatch):
     import numpy as np
 
     service, source = conversion
-    monkeypatch.setattr(service, "synthesize", lambda *args, **kwargs: np.array([]))
+    monkeypatch.setattr(service, "stream_speech", one_frame(lambda *args: np.array([])))
     encode = Mock()
     monkeypatch.setattr(service, "encode_pcm", encode)
     result = runner.invoke(app, ["convert", str(source), "-y"])
@@ -419,8 +592,18 @@ def test_real_cli_embedded_chapters(tmp_path, format_type):
     assert {path.name for path in tmp_path.iterdir()} == {source.name, output.name}
 
 
-def test_voice_rotation_reuses_one_pipeline(conversion, monkeypatch):
-    """Every section retains one voice across chunks and cycles in order."""
+@pytest.mark.parametrize(
+    ("arguments", "name", "voice_id"),
+    [
+        ([], "Nele", NELE),
+        (["-v", " anton "], "Anton", ANTON),
+        (["--voice", ANTON], "Anton", ANTON),
+    ],
+)
+def test_one_voice_speaks_every_chapter(
+    conversion, monkeypatch, arguments, name, voice_id
+):
+    """One model and one voice serve every chunk of every chapter."""
     import numpy as np
 
     from simple_tts.converter import ExtractedDocument, Section
@@ -434,26 +617,27 @@ def test_voice_rotation_reuses_one_pipeline(conversion, monkeypatch):
     spoken = []
     engine = object()
 
-    def load(voice, **kwargs):
-        loaded.append(voice)
+    def load(*, language, device, duration_delta, report):
+        loaded.append(language)
         return engine
 
-    def synthesize(pipeline, text, voice, speed):
-        assert pipeline is engine
+    def synthesize(model, text, voice):
+        assert model is engine
         spoken.append(voice)
         return np.zeros(240, dtype=np.float32)
 
     monkeypatch.setattr(service, "load_tts", load)
-    monkeypatch.setattr(service, "synthesize", synthesize)
+    monkeypatch.setattr(service, "stream_speech", one_frame(synthesize))
     monkeypatch.setattr(
         service, "encode_pcm", lambda pcm, output, *args: output.touch()
     )
     result = runner.invoke(
-        app, ["convert", str(source), "--voice", " af_bella, am_adam ", "-y"]
+        app, ["convert", str(source), "--language", "de", *arguments, "-y"]
     )
     assert result.exit_code == 0, result.output
-    assert loaded == ["af_bella"]
-    assert spoken == ["af_bella"] * 2 + ["am_adam"] * 2 + ["af_bella"] * 2
+    assert f"Voice: {name} " in plain(result.output)
+    assert loaded == ["de"]
+    assert spoken == [voice_id] * 6
 
 
 def test_output_directory_collision_precedes_synthesis(conversion, monkeypatch):
@@ -471,19 +655,38 @@ def test_output_directory_collision_precedes_synthesis(conversion, monkeypatch):
     assert source.is_file()
 
 
-def test_confirmation_lists_each_narrator(conversion, monkeypatch):
-    """The checkpoint identifies every narrator before conversion starts."""
+def test_confirmation_shows_the_voice(conversion, monkeypatch):
+    """The checkpoint identifies the one voice before conversion starts."""
     import numpy as np
 
     service, source = conversion
-    monkeypatch.setattr(service, "synthesize", lambda *args, **kwargs: np.zeros(240))
+    monkeypatch.setattr(
+        service, "stream_speech", one_frame(lambda *args: np.zeros(240))
+    )
     monkeypatch.setattr(service, "encode_pcm", lambda pcm, path, *args: path.touch())
     result = runner.invoke(
-        app, ["convert", str(source), "--voice", "af_bella,am_adam"], input="\n"
+        app,
+        [
+            "convert",
+            str(source),
+            "--language",
+            "de",
+            "--voice",
+            "Anton",
+            "--duration-delta",
+            "-0.1",
+        ],
+        input="\n",
     )
     assert result.exit_code == 0, result.output
-    assert "af_bella (American female voice)" in result.output
-    assert "am_adam (American male voice)" in result.output
+    clean = plain(result.output)
+    assert "Language German (de)" in clean
+    assert f"Voice Anton ({ANTON}): Anton test voice." in clean
+    assert clean.count("Voice Anton") == 1
+    assert "Nele" not in clean
+    assert "Duration Delta -0.1" in clean
+    # Only the summary's speed ratio remains. The speed setting is gone.
+    assert clean.count("Speed") == clean.count("Speed Ratio") == 1
 
 
 @pytest.mark.parametrize(
@@ -583,23 +786,70 @@ runner = CliRunner()
 assert runner.invoke(app, ['version']).exit_code == 0
 source = Path(sys.argv[1]) / 'input.md'
 source.write_text('Hello.')
-service.load_tts = lambda *args, **kwargs: object()
-service.synthesize = lambda *args, **kwargs: np.zeros(2400, dtype=np.float32)
+from contextlib import contextmanager
+from simple_tts import voices
+@contextmanager
+def stream(*args, **kwargs):
+    yield iter([np.zeros(2400, dtype=np.float32)])
+# Never read the real voice catalogue in a test process.
+voices.load_catalog = lambda: [voices.Voice('Zoey', 'NbpkqMVS3CJeq2j8', 'en')]
+service.load_tts = lambda **kwargs: object()
+service.stream_speech = stream
 converted = runner.invoke(app, ['convert', str(source), '-y'])
 assert converted.exit_code == 0, converted.output
 assert source.with_suffix('.m4a').exists()
 missing = runner.invoke(app, ['mcp', '--workspace', str(source.parent)])
 assert missing.exit_code == 1
 assert missing.stdout == ''
-assert 'pip install "simple-tts[mcp]"' in missing.stderr
+# The hint names this version's git tag and stays on one line.
+assert missing.stderr.splitlines() == [sys.argv[2]], missing.stderr
 """
     result = subprocess.run(
-        [sys.executable, "-c", script, str(tmp_path)],
+        [sys.executable, "-c", script, str(tmp_path), MCP_HINT],
         capture_output=True,
         text=True,
         timeout=15,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("platform", "message"),
+    [
+        (None, MCP_HINT),
+        ("win32", "requires POSIX support"),
+    ],
+)
+def test_mcp_without_extra_checks_the_platform_first(
+    tmp_path, monkeypatch, platform, message
+):
+    """Without the MCP extra, POSIX gets the install hint, Windows a platform error."""
+    import sys
+
+    from simple_tts import jobs
+
+    # None in sys.modules makes the import fail, as in a CLI-only install.
+    monkeypatch.setitem(sys.modules, "simple_tts.mcp", None)
+    if platform is not None:
+        monkeypatch.setattr(jobs.sys, "platform", platform)
+    result = runner.invoke(app, ["mcp", "--workspace", str(tmp_path)])
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert message in " ".join(result.stderr.split())
+    assert "Traceback" not in result.stderr
+
+
+def test_install_commands_use_git_tags():
+    """simple-tts is not on PyPI, so each install command names a git tag."""
+    # The possessive extras group keeps "simple-tts[mcp] @ git+" from matching.
+    pypi = re.compile(r'\binstall (?:-\S+ )*"?simple-tts(?:\[\w+\])?+(?! @ git\+)')
+    assert pypi.search("pip install -U simple-tts")
+    assert pypi.search('pip install "simple-tts[mcp]"')
+    assert not pypi.search(MCP_HINT)
+    root = Path(__file__).parents[1]
+    for path in [root / "README.md", *sorted((root / "src").rglob("*.py"))]:
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            assert not pypi.search(line), f"{path.name}:{number}: {line}"
 
 
 def test_mcp_windows_startup_error_uses_only_stderr(tmp_path, monkeypatch):

@@ -3,7 +3,7 @@
 import math
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -15,8 +15,20 @@ from simple_tts.converter import (
     validate_input,
 )
 from simple_tts.dependencies import get_missing_dependencies
-from simple_tts.tts import DEVICES, SAMPLE_RATE, load_tts, synthesize
-from simple_tts.voices import VOICES
+from simple_tts.tts import (
+    DEVICES,
+    DURATION_DELTA_RANGE,
+    SAMPLE_RATE,
+    load_tts,
+    stream_speech,
+)
+from simple_tts.voices import (
+    DEFAULT_LANGUAGE,
+    Voice,
+    check_language,
+    check_voice,
+    resolve_voice,
+)
 
 Phase = Literal[
     "extracting", "loading", "synthesizing", "encoding", "publishing", "done"
@@ -25,16 +37,23 @@ Phase = Literal[
 
 @dataclass(frozen=True)
 class ConversionRequest:
-    """Source and options shared by the CLI and MCP server."""
+    """Source and options shared by the CLI and MCP server.
+
+    ``voice`` is one catalogue voice name or ID for every chapter. ``None``
+    selects the default voice of ``language``.
+    ``duration_delta`` is the Phonon rate condition: negative values speak
+    faster and positive values slower.
+    """
 
     input_file: Path | None = None
     text: str | None = None
-    voices: tuple[str, ...] = ("af_bella",)
-    speed: float = 1.1
+    language: str = DEFAULT_LANGUAGE
+    voice: str | None = None
+    duration_delta: float = 0.0
     output: Path | None = None
     format_type: str | None = None
     chapter_level: int = 1
-    device: str = "auto"
+    device: str = "cpu"
 
 
 @dataclass(frozen=True)
@@ -75,6 +94,7 @@ class PreparedConversion:
     request: ConversionRequest
     output: Path
     format_type: str
+    voice: Voice
     document: ExtractedDocument
     sections: list[tuple[str, list[str]]]
     started: float
@@ -107,34 +127,43 @@ def resolve_output(
     return output.absolute(), selected
 
 
-def parse_voices(value: str) -> list[str]:
-    """Validate a rotation that shares one Kokoro language code."""
-    voices = [voice.strip() for voice in value.split(",")]
-    for voice in voices:
-        if voice not in VOICES:
-            raise ValueError(f"Unknown voice '{voice}'. Run 'simple-tts voices'.")
-    if len({voice[0] for voice in voices}) != 1:
-        raise ValueError("All voices must share one Kokoro language code.")
-    return voices
+def check_duration_delta(value: float) -> None:
+    """Reject a rate condition outside ``DURATION_DELTA_RANGE``.
+
+    Example:
+        >>> check_duration_delta(0.5)
+        Traceback (most recent call last):
+        ...
+        ValueError: Duration delta must be from -0.3 through 0.3.
+    """
+    low, high = DURATION_DELTA_RANGE
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or not low <= value <= high
+    ):
+        raise ValueError(f"Duration delta must be from {low} through {high}.")
 
 
 def validate_request(request: ConversionRequest) -> tuple[Path, str]:
-    """Reject invalid options before extraction or model loading."""
+    """Reject invalid options before extraction or model loading.
+
+    The voice gets a syntax check only. The catalogue check happens in
+    ``prepare_conversion``, so job submission reads no catalogue.
+    """
     if (request.input_file is None) == (request.text is None):
         raise ValueError("Supply exactly one source: input_file or text.")
     if request.text is not None and not request.text.strip():
         raise ValueError("The document contains no narration text.")
-    if not request.voices:
-        raise ValueError("Select at least one voice.")
-    if any(voice not in VOICES for voice in request.voices):
-        raise ValueError("Unknown voice. Run 'simple-tts voices'.")
-    parse_voices(",".join(request.voices))
-    if not math.isfinite(request.speed) or not 0.5 <= request.speed <= 2.0:
-        raise ValueError("Speed must be from 0.5 through 2.0.")
+    check_language(request.language)
+    if request.voice is not None:
+        check_voice(request.voice)
+    check_duration_delta(request.duration_delta)
     if type(request.chapter_level) is not int or not 1 <= request.chapter_level <= 6:
         raise ValueError("Chapter level must be from 1 through 6.")
     if request.device not in DEVICES:
-        raise ValueError("Device must be auto, cuda, mps, or cpu.")
+        raise ValueError("Device must be cpu, mps, or cuda.")
     source = request.input_file or Path("text.md")
     output, format_type = resolve_output(source, request.output, request.format_type)
     if not output.parent.is_dir():
@@ -174,9 +203,15 @@ def prepare_conversion(
     report: Callable[[ProgressEvent], None] = _ignore_event,
     check_cancelled: Callable[[], None] = _no_cancellation,
 ) -> PreparedConversion:
-    """Extract narration before the CLI requests confirmation."""
+    """Resolve the voice and extract narration before the CLI asks to confirm.
+
+    Voice errors stop the conversion before extraction. An MCP worker calls
+    this function, so the catalogue read stays out of job submission.
+    """
     started = time.monotonic()
     output, format_type = validate_request(request)
+    request = replace(request, language=check_language(request.language))
+    voice = resolve_voice(request.voice, request.language)
     check_cancelled()
     report(ProgressEvent("extracting"))
     require_dependencies()
@@ -195,7 +230,9 @@ def prepare_conversion(
     if not total:
         raise ValueError("The document contains no narration text.")
     report(ProgressEvent("extracting", total_chunks=total))
-    return PreparedConversion(request, output, format_type, document, sections, started)
+    return PreparedConversion(
+        request, output, format_type, voice, document, sections, started
+    )
 
 
 def execute_conversion(
@@ -206,32 +243,35 @@ def execute_conversion(
     report: Callable[[ProgressEvent], None] = _ignore_event,
     check_cancelled: Callable[[], None] = _no_cancellation,
 ) -> ConversionResult:
-    """Write bounded PCM chunks and encode once without publishing a file."""
+    """Write streamed PCM frames and encode once without publishing a file."""
     request = prepared.request
     total = sum(len(chunks) for _, chunks in prepared.sections)
     completed = 0
     check_cancelled()
     report(ProgressEvent("loading", total_chunks=total))
-    pipeline = load_tts(
-        request.voices[0],
+    # One model and one voice serve every chapter of the conversion.
+    model = load_tts(
+        language=request.language,
         device=request.device,
+        duration_delta=request.duration_delta,
         report=lambda message: report(ProgressEvent("loading", 0, total, message)),
     )
     check_cancelled()
     report(ProgressEvent("synthesizing", 0, total))
     pcm_path = scratch / "narration.f32le"
+    # The voice ID is unique. ptts downloads the voice before the first frame.
+    voice = prepared.voice.voice_id
     chapters = []
     with pcm_path.open("wb") as stream:
         writer = PCMWriter(stream)
-        for index, (title, chunks) in enumerate(prepared.sections):
-            voice = request.voices[index % len(request.voices)]
+        for title, chunks in prepared.sections:
             start = writer.samples
             for chunk in chunks:
                 check_cancelled()
-                audio = synthesize(pipeline, chunk, voice=voice, speed=request.speed)
-                check_cancelled()
-                writer.write(audio)
-                del audio
+                with stream_speech(model, chunk, voice=voice) as frames:
+                    for frame in frames:
+                        writer.write(frame)
+                        check_cancelled()
                 completed += 1
                 report(ProgressEvent("synthesizing", completed, total))
             if writer.samples > start:

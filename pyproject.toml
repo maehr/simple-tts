@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "simple-tts"
-version = "0.3.0"
-description = "A simple text-to-speech CLI using Kokoro TTS"
+version = "0.4.0"
+description = "A simple text-to-speech CLI using Phonon 40M Multilingual"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
@@ -28,8 +28,7 @@ dependencies = [
     "rich>=13.0.0",
     "numpy>=1.24.0",
     "soundfile>=0.12.0",
-    "kokoro>=0.9.4",
-    "torch>=2.2.0",
+    "ptts==0.4.2",
 ]
 
 [project.optional-dependencies]
@@ -43,10 +42,6 @@ dev = [
 
 [project.scripts]
 simple-tts = "simple_tts.cli:app"
-
-[tool.uv]
-# curated-tokenizers 0.0.9 fails to compile with newer Cython releases.
-build-constraint-dependencies = ["cython<3.2"]
 
 [tool.ruff]
 line-length = 88
@@ -72,6 +67,9 @@ convention = "google"
 testpaths = ["tests"]
 addopts = "--doctest-modules --cov=simple_tts --cov-report=term-missing"
 pythonpath = ["src"]
+markers = [
+    "model: real Phonon model tests, skipped unless SIMPLE_TTS_MODEL_TESTS=1",
+]
 
 [tool.coverage.run]
 source = ["src/simple_tts"]

@@ -3,6 +3,7 @@
 import html
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -152,55 +153,117 @@ def normalize_text(text: str) -> str:
     return "\n\n".join(cleaned_paragraphs)
 
 
-def split_into_chunks(text: str, max_chunk_size: int = 1000) -> list[str]:
-    """Split text into chunks for processing.
+_PARAGRAPH_BREAK = re.compile(r"\n\s*\n")
+_SENTENCE_BREAK = re.compile(r"[.!?…](?:\s*[»”’]|[\"'”’»)\]]*)\s+")
+_CLAUSE_BREAK = re.compile(r",[\"'”’»)\]]*\s+")
 
-    Splits text into manageable chunks at sentence boundaries when possible,
-    to keep memory usage low during TTS processing.
+
+def _split_after(pattern: re.Pattern[str], text: str) -> list[str]:
+    """Split text after each match and keep the matched punctuation."""
+    parts: list[str] = []
+    start = 0
+    for match in pattern.finditer(text):
+        parts.append(text[start : match.end()].strip())
+        start = match.end()
+    parts.append(text[start:].strip())
+    return [part for part in parts if part]
+
+
+def _cut_token(token: str, max_chunk_size: int) -> list[str]:
+    """Cut a token without whitespace into pieces of the given size."""
+    return [
+        token[start : start + max_chunk_size]
+        for start in range(0, len(token), max_chunk_size)
+    ]
+
+
+def _split_clause(clause: str, max_chunk_size: int) -> list[str]:
+    """Split one oversized clause at whitespace, then cut long tokens."""
+    return _pack_parts(
+        [(" ", token) for token in clause.split()],
+        max_chunk_size,
+        lambda token: _cut_token(token, max_chunk_size),
+    )
+
+
+def _split_sentence(sentence: str, max_chunk_size: int) -> list[str]:
+    """Split an oversized sentence at commas, then at whitespace."""
+    return _pack_parts(
+        [(" ", clause) for clause in _split_after(_CLAUSE_BREAK, sentence)],
+        max_chunk_size,
+        lambda clause: _split_clause(clause, max_chunk_size),
+    )
+
+
+def _pack_parts(
+    parts: list[tuple[str, str]],
+    max_chunk_size: int,
+    split_part: Callable[[str], list[str]],
+) -> list[str]:
+    """Join parts with their separators and split any part above the limit."""
+    chunks: list[str] = []
+    current = ""
+    for separator, part in parts:
+        if not part:
+            continue
+        if len(part) > max_chunk_size:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(split_part(part))
+        elif not current:
+            current = part
+        elif len(current) + len(separator) + len(part) <= max_chunk_size:
+            current = f"{current}{separator}{part}"
+        else:
+            chunks.append(current)
+            current = part
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def split_into_chunks(text: str, max_chunk_size: int = 1000) -> list[str]:
+    """Split text into chunks at paragraph and sentence boundaries.
+
+    Paragraphs end at blank lines. Sentences end after a full stop, an
+    exclamation mark, a question mark, or an ellipsis. Closing quotes and
+    brackets stay with their sentence. Whole sentences are packed up to the
+    limit and joined with one space; a chunk that spans paragraphs keeps
+    their blank line. An oversized sentence splits at commas first and
+    whitespace second. A token without whitespace is cut only when it is
+    longer than the limit.
 
     Args:
         text: The text to split.
         max_chunk_size: Maximum size of each chunk in characters.
 
     Returns:
-        List of text chunks.
+        List of text chunks. Empty text returns an empty list.
 
     Examples:
         >>> split_into_chunks("Hello. World.", max_chunk_size=100)
         ['Hello. World.']
+        >>> split_into_chunks("Wait! Now go.", max_chunk_size=10)
+        ['Wait!', 'Now go.']
         >>> chunks = split_into_chunks("A" * 50, max_chunk_size=25)
         >>> len(chunks)
         2
         >>> len(chunks[0])
         25
+        >>> split_into_chunks("")
+        []
     """
-    if len(text) <= max_chunk_size:
-        return [text]
-
-    chunks = []
-    current_chunk = ""
-
-    # Try to split at sentence boundaries
-    sentences = text.replace(". ", ".\n").split("\n")
-
-    for sentence in sentences:
-        if len(current_chunk) + len(sentence) + 1 <= max_chunk_size:
-            if current_chunk:
-                current_chunk += " " + sentence
-            else:
-                current_chunk = sentence
-        else:
-            if current_chunk:
-                chunks.append(current_chunk)
-            # If a single sentence is too long, split it
-            if len(sentence) > max_chunk_size:
-                for i in range(0, len(sentence), max_chunk_size):
-                    chunks.append(sentence[i : i + max_chunk_size])
-                current_chunk = ""
-            else:
-                current_chunk = sentence
-
-    if current_chunk:
-        chunks.append(current_chunk)
-
-    return chunks
+    sentences: list[tuple[str, str]] = []
+    for paragraph in _PARAGRAPH_BREAK.split(text):
+        paragraph = " ".join(paragraph.split())
+        if not paragraph:
+            continue
+        for index, sentence in enumerate(_split_after(_SENTENCE_BREAK, paragraph)):
+            separator = " " if index else ("\n\n" if sentences else "")
+            sentences.append((separator, sentence))
+    return _pack_parts(
+        sentences,
+        max_chunk_size,
+        lambda sentence: _split_sentence(sentence, max_chunk_size),
+    )
