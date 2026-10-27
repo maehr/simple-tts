@@ -142,7 +142,7 @@ def load_catalog() -> list[Voice]:
     try:
         import ptts
     except ImportError as e:
-        raise RuntimeError("ptts is missing. Run: pip install -U simple-tts") from e
+        raise RuntimeError("ptts is missing. Reinstall simple-tts.") from e
     try:
         # The default catalogue is pinned. An unpinned repo sends a request per call.
         entries = ptts.catalog_voices()

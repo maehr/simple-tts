@@ -124,7 +124,7 @@ def test_load_catalog_rejects_an_empty_catalogue(ptts):
 def test_load_catalog_without_ptts(monkeypatch):
     """A missing runtime gives an installation hint."""
     monkeypatch.setitem(sys.modules, "ptts", None)
-    with pytest.raises(RuntimeError, match="ptts is missing"):
+    with pytest.raises(RuntimeError, match=r"^ptts is missing. Reinstall simple-tts.$"):
         load_catalog()
 
 

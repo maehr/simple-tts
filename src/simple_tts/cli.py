@@ -29,6 +29,7 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from simple_tts import __version__
 from simple_tts.dependencies import (
     install_dependencies_brew,
     print_dependency_status,
@@ -59,6 +60,7 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+REPOSITORY = "https://github.com/maehr/simple-tts"
 
 
 def format_duration(seconds: float) -> str:
@@ -84,6 +86,18 @@ def format_duration(seconds: float) -> str:
     parts.append(f"{secs}s")
 
     return " ".join(parts)
+
+
+def mcp_install_hint() -> str:
+    """Return the command that installs the MCP extra of this version.
+
+    simple-tts is not on PyPI. Each release is a git tag.
+
+    Example:
+        >>> print(mcp_install_hint())  # doctest: +ELLIPSIS
+        pip install "simple-tts[mcp] @ git+https://github.com/maehr/simple-tts@v..."
+    """
+    return f'pip install "simple-tts[mcp] @ git+{REPOSITORY}@v{__version__}"'
 
 
 def language_label(code: str) -> str:
@@ -343,8 +357,9 @@ def mcp(
 
         server = create_server(workspace)
     except ImportError as error:
+        # soft_wrap keeps the long command on one line, so that users can copy it.
         Console(stderr=True).print(
-            'Install MCP support: pip install "simple-tts[mcp]"', markup=False
+            f"Install MCP support: {mcp_install_hint()}", markup=False, soft_wrap=True
         )
         raise typer.Exit(1) from error
     except RuntimeError as error:
@@ -393,8 +408,6 @@ def voices(
 @app.command()
 def version() -> None:
     """Show version."""
-    from simple_tts import __version__
-
     console.print(f"simple-tts version {__version__}")
 
 

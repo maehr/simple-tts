@@ -36,10 +36,22 @@ sudo apt install pandoc ffmpeg
 ```
 
 Install the package with Python 3.12 or later.
+simple-tts is not on PyPI.
+Each release is a signed git tag.
+Install the release from its tag, for example `v0.4.0`.
 
 ```bash
-pip install simple-tts
+pip install "simple-tts @ git+https://github.com/maehr/simple-tts@v0.4.0"
 ```
+
+To install the command as a separate tool with uv, use this command.
+
+```bash
+uv tool install "simple-tts @ git+https://github.com/maehr/simple-tts@v0.4.0"
+```
+
+Do not install a package with the name `simple-tts` from PyPI.
+This project does not publish that package.
 
 To install from source, use these commands.
 
@@ -461,10 +473,10 @@ The MCP server supports macOS and Linux.
 On Windows, the MCP command exits with a platform error.
 The `convert` command remains available on Windows.
 
-Install the MCP extra with this command.
+Install the MCP extra from the git tag with this command.
 
 ```bash
-pip install "simple-tts[mcp]"
+pip install "simple-tts[mcp] @ git+https://github.com/maehr/simple-tts@v0.4.0"
 ```
 
 Start the server with an existing workspace directory.

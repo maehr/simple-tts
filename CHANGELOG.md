@@ -57,6 +57,8 @@ Version numbers follow the [versioning policy](README.md#versioning).
 - CLI validation errors and paths with square brackets print as written. Rich no longer reads them as markup.
 - Voice errors name the CLI command `simple-tts voices --language <code>` and the MCP tool `list_voices`. MCP jobs return these errors too.
 - The error for a missing default voice no longer names `--voice`. It tells the user to select another voice.
+- The README install commands and the MCP install hint use the git tag, for example `v0.4.0`, because simple-tts is not on PyPI.
+- A missing `ptts` package gives the message `ptts is missing. Reinstall simple-tts.`
 
 ## 0.3.0 - Unreleased
 

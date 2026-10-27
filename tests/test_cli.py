@@ -7,12 +7,17 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from simple_tts import __version__
 from simple_tts.cli import app, format_duration
 from tests.workers import one_frame
 
 runner = CliRunner()
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 NELE = "2A2fFf8SkDEJ8nzx"
+MCP_HINT = (
+    "Install MCP support: pip install "
+    f'"simple-tts[mcp] @ git+https://github.com/maehr/simple-tts@v{__version__}"'
+)
 ANTON = "3ZKKapPOvuWFcw9f"
 
 
@@ -49,8 +54,6 @@ class TestCLIVersion:
         result = runner.invoke(app, ["version"])
         assert result.exit_code == 0
         assert "simple-tts" in result.stdout
-        from simple_tts import __version__
-
         assert __version__ in result.stdout
 
 
@@ -798,10 +801,11 @@ assert source.with_suffix('.m4a').exists()
 missing = runner.invoke(app, ['mcp', '--workspace', str(source.parent)])
 assert missing.exit_code == 1
 assert missing.stdout == ''
-assert 'pip install "simple-tts[mcp]"' in missing.stderr
+# The hint names this version's git tag and stays on one line.
+assert missing.stderr.splitlines() == [sys.argv[2]], missing.stderr
 """
     result = subprocess.run(
-        [sys.executable, "-c", script, str(tmp_path)],
+        [sys.executable, "-c", script, str(tmp_path), MCP_HINT],
         capture_output=True,
         text=True,
         timeout=15,
@@ -812,7 +816,7 @@ assert 'pip install "simple-tts[mcp]"' in missing.stderr
 @pytest.mark.parametrize(
     ("platform", "message"),
     [
-        (None, 'Install MCP support: pip install "simple-tts[mcp]"'),
+        (None, MCP_HINT),
         ("win32", "requires POSIX support"),
     ],
 )
@@ -833,6 +837,19 @@ def test_mcp_without_extra_checks_the_platform_first(
     assert result.stdout == ""
     assert message in " ".join(result.stderr.split())
     assert "Traceback" not in result.stderr
+
+
+def test_install_commands_use_git_tags():
+    """simple-tts is not on PyPI, so each install command names a git tag."""
+    # The possessive extras group keeps "simple-tts[mcp] @ git+" from matching.
+    pypi = re.compile(r'\binstall (?:-\S+ )*"?simple-tts(?:\[\w+\])?+(?! @ git\+)')
+    assert pypi.search("pip install -U simple-tts")
+    assert pypi.search('pip install "simple-tts[mcp]"')
+    assert not pypi.search(MCP_HINT)
+    root = Path(__file__).parents[1]
+    for path in [root / "README.md", *sorted((root / "src").rglob("*.py"))]:
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            assert not pypi.search(line), f"{path.name}:{number}: {line}"
 
 
 def test_mcp_windows_startup_error_uses_only_stderr(tmp_path, monkeypatch):

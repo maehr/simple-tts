@@ -133,7 +133,7 @@ def load_tts(
     try:
         import ptts
     except ImportError as e:
-        raise RuntimeError("ptts is missing. Run: pip install -U simple-tts") from e
+        raise RuntimeError("ptts is missing. Reinstall simple-tts.") from e
 
     backend, quant = BACKENDS[device]
     if backend not in ptts.available_devices():

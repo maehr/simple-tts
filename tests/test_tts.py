@@ -222,7 +222,7 @@ def test_load_errors_are_explained(ptts, error, message):
 def test_missing_ptts_reports_install_hint(monkeypatch):
     """A missing runtime package never returns silence."""
     monkeypatch.setitem(sys.modules, "ptts", None)
-    with pytest.raises(RuntimeError, match="ptts is missing"):
+    with pytest.raises(RuntimeError, match=r"^ptts is missing. Reinstall simple-tts.$"):
         tts.load_tts(language="en")
 
 
