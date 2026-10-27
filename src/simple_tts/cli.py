@@ -338,6 +338,10 @@ def mcp(
 ) -> None:
     """Run the local MCP server on macOS or Linux over stdio."""
     try:
+        from simple_tts.jobs import require_mcp_platform
+
+        # Check the platform before the optional MCP imports can fail.
+        require_mcp_platform()
         from simple_tts.mcp import create_server
 
         server = create_server(workspace)

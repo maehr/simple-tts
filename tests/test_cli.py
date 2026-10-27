@@ -795,6 +795,32 @@ assert 'pip install "simple-tts[mcp]"' in missing.stderr
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize(
+    ("platform", "message"),
+    [
+        (None, 'Install MCP support: pip install "simple-tts[mcp]"'),
+        ("win32", "requires POSIX support"),
+    ],
+)
+def test_mcp_without_extra_checks_the_platform_first(
+    tmp_path, monkeypatch, platform, message
+):
+    """Without the MCP extra, POSIX gets the install hint, Windows a platform error."""
+    import sys
+
+    from simple_tts import jobs
+
+    # None in sys.modules makes the import fail, as in a CLI-only install.
+    monkeypatch.setitem(sys.modules, "simple_tts.mcp", None)
+    if platform is not None:
+        monkeypatch.setattr(jobs.sys, "platform", platform)
+    result = runner.invoke(app, ["mcp", "--workspace", str(tmp_path)])
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert message in " ".join(result.stderr.split())
+    assert "Traceback" not in result.stderr
+
+
 def test_mcp_windows_startup_error_uses_only_stderr(tmp_path, monkeypatch):
     """Windows gets a useful MCP startup error while ordinary commands still work."""
     from simple_tts import jobs
