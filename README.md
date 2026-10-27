@@ -356,14 +356,41 @@ These numbers are vendor-reported.
 They are not measurements of the multilingual model with 8-bit weights.
 See the [Phonon performance notes](https://github.com/gradium-ai/xn-ptts#performance).
 
-A local test on one Apple M5 Pro gave these results with `ptts` 0.4.0.
-`ptts` 0.4.2 gave the same speed.
-Each run converted a three-chapter document of about 3 KB in each language, from model load to the WAV file.
+Local tests on one Apple M5 Pro measured two different speeds.
+Speed is the audio duration divided by the elapsed time.
 
-| Configuration | Speed (real time) | Peak memory | GPU use |
+- The model speed measures only the model, from model load to a WAV file, in one Python process.
+- The CLI speed measures a full `simple-tts convert` command in a new process. It includes the process start, Pandoc, the model load, the synthesis, and the audio encoding.
+
+Use the CLI speed to estimate the time of a conversion.
+Do not use the model speed for this purpose.
+
+For the model speed, each run converted a three-chapter document of about 3 KB in each language.
+The test used `ptts` 0.4.0. `ptts` 0.4.2 gave the same speed.
+The speed range covers the median speeds of the four languages.
+
+| Configuration | Model speed, load to WAV | Peak memory | GPU use |
 | --- | --- | --- | --- |
 | CPU, 8-bit, 6 threads (simple-tts) | 70.1x to 71.3x | 393 MB | 0 % |
 | Metal, f32 | 31.4x to 31.6x | 477 MB, plus about 300 MB of GPU memory | 82 % (median) |
+
+For the CLI speed, each run converted the English fixture `tests/fixtures/narration/en.md` to M4A with a warm cache.
+Each device had one warm-up run and three timed runs.
+The test used `ptts` 0.4.2.
+
+```bash
+simple-tts convert tests/fixtures/narration/en.md --language en --device cpu -o en.m4a -y
+```
+
+| `--device` | Audio | CLI speed, M4A (median) | Process time (median) | Peak memory (median) |
+| --- | --- | --- | --- | --- |
+| `cpu` (8-bit) | 186.00 s | 36.6x | 5.18 s | 397 MB |
+| `mps` (f32) | 185.76 s | 22.6x | 8.34 s | 483 MB |
+
+With WAV output instead of M4A, the CLI speed was 48.0x for `cpu` and 28.5x for `mps`.
+The process times were 3.98 s and 6.61 s.
+The AAC encoding at 128 kbps took 1.84 s for 186 s of audio.
+End to end, `mps` was 38 % slower than `cpu`.
 
 On this machine, Metal with f32 weights was slower than the CPU with 8-bit weights.
 The 8-bit weight file is smaller: 74.6 MB, compared to 121.7 MB for f32.
