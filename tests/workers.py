@@ -1,5 +1,6 @@
 """Importable worker targets for spawn-based integration tests."""
 
+import json
 import os
 import signal
 import subprocess
@@ -12,6 +13,17 @@ import numpy as np
 from simple_tts import service
 from simple_tts.jobs import conversion_worker
 from simple_tts.processes import run_command
+
+ZOEY = "NbpkqMVS3CJeq2j8"
+
+
+def use_fake_ptts():
+    """Install the test ptts module, so no worker reads the real catalogue."""
+    from tests.conftest import fake_ptts
+
+    module = fake_ptts()
+    sys.modules["ptts"] = module
+    return module
 
 
 def one_frame(synthesize):
@@ -26,22 +38,59 @@ def one_frame(synthesize):
 
 def mock_worker(request, workspace, scratch, staged, cancelled, sender):
     """Use real extraction and encoding with deterministic synthesis."""
+    use_fake_ptts()
 
-    def load(*, language, device, report):
+    def load(*, language, device, duration_delta, report):
         print("Worker diagnostic", flush=True)
         report(f"Device: {device}")
         return object()
 
     def synthesize(model, text, voice):
-        return np.full(2400, 0.1 if voice == "af_bella" else 0.2, dtype=np.float32)
+        return np.full(2400, 0.1 if voice == ZOEY else 0.2, dtype=np.float32)
 
     service.load_tts = load
     service.stream_speech = one_frame(synthesize)
     conversion_worker(request, workspace, scratch, staged, cancelled, sender)
 
 
+def _engine_worker(devices, request, workspace, scratch, staged, cancelled, sender):
+    """Run the real engine with a fake ptts and record model loads and voices."""
+    from tests.conftest import FakeTTS
+
+    module = use_fake_ptts()
+    module.available_devices.return_value = devices
+    models = []
+
+    def load(*args, **kwargs):
+        models.append(FakeTTS(*args, **kwargs))
+        return models[-1]
+
+    module.TTS.side_effect = load
+    try:
+        conversion_worker(request, workspace, scratch, staged, cancelled, sender)
+    finally:
+        loads = [call.kwargs for call in module.TTS.call_args_list]
+        voices = [voice for model in models for _, voice, _ in model.streams]
+        (workspace / "ptts.json").write_text(
+            json.dumps({"loads": loads, "voices": voices})
+        )
+
+
+def engine_worker(request, workspace, scratch, staged, cancelled, sender):
+    """Use a ptts build that offers only the CPU."""
+    _engine_worker(["cpu"], request, workspace, scratch, staged, cancelled, sender)
+
+
+def metal_engine_worker(request, workspace, scratch, staged, cancelled, sender):
+    """Use a ptts build that offers Metal and the CPU."""
+    _engine_worker(
+        ["metal", "cpu"], request, workspace, scratch, staged, cancelled, sender
+    )
+
+
 def failing_worker(request, workspace, scratch, staged, cancelled, sender):
     """Fail after writing partial audio so cleanup can be checked."""
+    use_fake_ptts()
 
     def fail(*args, **kwargs):
         (scratch / "partial.f32le").write_bytes(b"partial")
@@ -60,6 +109,7 @@ def crashing_worker(request, workspace, scratch, staged, cancelled, sender):
 
 def slow_worker(request, workspace, scratch, staged, cancelled, sender):
     """Stream frames without end, so only cancellation can stop synthesis."""
+    use_fake_ptts()
     service.load_tts = lambda **kwargs: object()
 
     def frames():
@@ -77,6 +127,7 @@ def slow_worker(request, workspace, scratch, staged, cancelled, sender):
 
 def external_worker(request, workspace, scratch, staged, cancelled, sender):
     """Block extraction in an external process that ignores SIGTERM."""
+    use_fake_ptts()
 
     def extract(*args, **kwargs):
         run_command(

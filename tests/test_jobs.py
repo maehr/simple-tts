@@ -58,7 +58,7 @@ def test_conversion_results_and_cleanup(tmp_path, source_kind):
         try:
             start = manager.start(
                 ConversionRequest(
-                    **source, voices=("af_bella", "am_adam"), format_type="m4b"
+                    **source, voices=("Zoey", "Hadley"), format_type="m4b"
                 )
             )
             assert start.state == "running"
@@ -135,6 +135,45 @@ def test_worker_failures_keep_records_and_clean_files(tmp_path, worker):
             await manager.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"language": "it"}, "Unsupported language"),
+        ({"voices": ("Nele,Anton",)}, "contain commas"),
+        ({"duration_delta": 0.4}, "Duration delta"),
+    ],
+)
+def test_option_syntax_is_a_request_error(tmp_path, ptts, options, message):
+    """Syntax errors never start a worker, and submission reads no catalogue."""
+    manager = JobManager(tmp_path)
+    with pytest.raises(ValueError, match=message):
+        manager.start(ConversionRequest(text="Hello.", **options))
+    assert not manager.records
+    ptts.catalog_voices.assert_not_called()
+
+
+def test_unknown_voice_is_a_worker_error(tmp_path, ptts):
+    """Catalogue names are resolved in the worker, not during submission."""
+
+    async def scenario():
+        manager = JobManager(tmp_path, worker=mock_worker)
+        try:
+            start = manager.start(
+                ConversionRequest(text="Hallo.", language="de", voices=("Zoey",))
+            )
+            assert start.state == "running"
+            done = await finish(manager, start.job_id)
+            assert done.state == "failed"
+            assert "ValueError: Voice 'Zoey' is English (en)" in done.error
+            assert not list(tmp_path.rglob("*.m4a"))
+            assert_clean(tmp_path)
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+    ptts.catalog_voices.assert_not_called()
 
 
 @pytest.mark.parametrize("text", ["", "   ", "\n\n"])

@@ -12,6 +12,12 @@ from simple_tts import dependencies, service, tts
 from simple_tts.audio import Chapter, PCMWriter
 from simple_tts.processes import ConversionCancelled
 from simple_tts.service import ConversionRequest, execute_conversion, prepare_conversion
+from simple_tts.voices import Voice
+
+ZOEY = "NbpkqMVS3CJeq2j8"
+HADLEY = "bXwrkHhURL1VFJdG"
+NELE = "2A2fFf8SkDEJ8nzx"
+ANTON = "3ZKKapPOvuWFcw9f"
 
 
 @pytest.mark.parametrize(
@@ -19,13 +25,17 @@ from simple_tts.service import ConversionRequest, execute_conversion, prepare_co
     [
         ({"text": None}, "exactly one source"),
         ({"input_file": Path("book.md")}, "exactly one source"),
-        ({"voices": ()}, "at least one voice"),
-        ({"voices": ("af_bella,am_adam",)}, "Unknown voice"),
-        ({"voices": ("af_bella", "bf_emma")}, "share one"),
-        ({"speed": float("nan")}, "Speed"),
-        ({"speed": float("inf")}, "Speed"),
-        ({"speed": 0.4}, "Speed"),
-        ({"speed": 2.1}, "Speed"),
+        ({"language": "it"}, "Unsupported language"),
+        ({"language": "de-DE"}, "Unsupported language"),
+        ({"language": ""}, "Unsupported language"),
+        ({"voices": ("Zoey,Hadley",)}, "contain commas"),
+        ({"voices": ("Zoey", " ")}, "must not be empty"),
+        ({"duration_delta": float("nan")}, "Duration delta"),
+        ({"duration_delta": float("inf")}, "Duration delta"),
+        ({"duration_delta": -0.31}, "Duration delta"),
+        ({"duration_delta": 0.31}, "Duration delta"),
+        ({"duration_delta": True}, "Duration delta"),
+        ({"duration_delta": "0.1"}, "Duration delta"),
         ({"chapter_level": 0}, "Chapter level"),
         ({"chapter_level": True}, "Chapter level"),
         ({"chapter_level": 1.5}, "Chapter level"),
@@ -39,13 +49,31 @@ def test_shared_request_validation(tmp_path, changes, message):
         service.validate_request(replace(request, **changes))
 
 
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {},
+        {"language": "DE", "voices": ("Unknown",)},
+        {"language": "fr", "voices": ("Zoey",)},
+        {"duration_delta": -0.3},
+        {"duration_delta": 0.3},
+        {"duration_delta": 0},
+    ],
+)
+def test_validation_reads_no_catalogue(tmp_path, ptts, changes):
+    """Request validation checks syntax only, also for unknown voice names."""
+    request = ConversionRequest(text="Hello.", output=tmp_path / "audio.m4a")
+    service.validate_request(replace(request, **changes))
+    ptts.catalog_voices.assert_not_called()
+
+
 def test_preparation_preview_and_execution(tmp_path, monkeypatch):
     """Preparation does not load a model and execution preserves chapter rotation."""
     output = tmp_path / "audio.M4B"
     request = ConversionRequest(
         text="Intro.\n\n## First\n\n" + "A" * 2000 + "\n\n## Last\n\nEnd.",
-        voices=("af_bella", "am_adam"),
-        speed=0.8,
+        voices=("zoey", HADLEY),
+        duration_delta=-0.2,
         output=output,
         chapter_level=2,
         device="mps",
@@ -58,6 +86,7 @@ def test_preparation_preview_and_execution(tmp_path, monkeypatch):
     assert prepared.format_type == "m4b"
     assert prepared.document.matched_headings == 2
     assert len(prepared.chunks) == 5
+    assert [voice.name for voice in prepared.voices] == ["Zoey", "Hadley"]
     spoken = []
 
     @contextmanager
@@ -71,10 +100,17 @@ def test_preparation_preview_and_execution(tmp_path, monkeypatch):
     result = execute_conversion(prepared, tmp_path, staged, report=events.append)
     load.assert_called_once()
     assert load.call_args.args == ()
-    assert load.call_args.kwargs.keys() == {"language", "device", "report"}
+    assert load.call_args.kwargs.keys() == {
+        "language",
+        "device",
+        "duration_delta",
+        "report",
+    }
     assert load.call_args.kwargs["language"] == "en"
     assert load.call_args.kwargs["device"] == "mps"
-    assert spoken == ["af_bella"] + ["am_adam"] * 3 + ["af_bella"]
+    assert load.call_args.kwargs["duration_delta"] == -0.2
+    # ptts receives the unique catalogue voice ID, not the typed name.
+    assert spoken == [ZOEY] + [HADLEY] * 3 + [ZOEY]
     assert [chapter.title for chapter in result.chapters] == [
         "Introduction",
         "First",
@@ -127,6 +163,86 @@ def test_unavailable_gpu_fails_before_synthesis(tmp_path):
     assert not staged.exists()
 
 
+@pytest.mark.parametrize(
+    ("language", "voice", "duration_delta"),
+    [
+        ("en", "NbpkqMVS3CJeq2j8", 0.0),
+        ("de", "2A2fFf8SkDEJ8nzx", -0.3),
+        ("es", "b6FvJAiokjdqIti4", 0.15),
+        ("FR", "FXxJ9mANRq6BCTX5", 0.3),
+    ],
+)
+def test_language_selects_model_voice_and_rate(
+    tmp_path, ptts, monkeypatch, language, voice, duration_delta
+):
+    """The language picks the native default voice and reaches ptts with the rate."""
+    models = []
+
+    def load(**kwargs):
+        models.append(tts.load_tts(**kwargs))
+        return models[-1]
+
+    monkeypatch.setattr(service, "load_tts", load)
+    request = ConversionRequest(
+        text="Hello.",
+        language=language,
+        duration_delta=duration_delta,
+        output=tmp_path / "audio.wav",
+    )
+    prepared = prepare_conversion(request, tmp_path)
+    assert prepared.request.language == language.lower()
+    execute_conversion(prepared, tmp_path, tmp_path / "staged.wav")
+    ptts.TTS.assert_called_once()
+    assert ptts.TTS.call_args.kwargs == {
+        "device": "cpu",
+        "quant": "q8",
+        "lang": language.lower(),
+        "conditions": {"duration_delta": duration_delta},
+    }
+    assert [stream_voice for _, stream_voice, _ in models[0].streams] == [voice]
+
+
+@pytest.mark.parametrize(
+    ("changes", "error", "message"),
+    [
+        ({"voices": ("Unknown",)}, ValueError, "Unknown voice 'Unknown'"),
+        ({"language": "de", "voices": ("Zoey",)}, ValueError, "'Zoey' is English"),
+        (
+            {"language": "de", "voices": ("Nele", "Noémie")},
+            ValueError,
+            "'Noémie' is French",
+        ),
+        ({"catalog": OSError("offline")}, RuntimeError, "Connect to the internet"),
+    ],
+)
+def test_voice_errors_precede_extraction(
+    tmp_path, ptts, monkeypatch, changes, error, message
+):
+    """Voice resolution fails before Pandoc, the model, or a voice download."""
+    if "catalog" in changes:
+        ptts.catalog_voices.side_effect = changes.pop("catalog")
+    extract = Mock()
+    monkeypatch.setattr(service, "extract_sections", extract)
+    request = ConversionRequest(text="Hello.", output=tmp_path / "audio.m4a", **changes)
+    with pytest.raises(error, match=message):
+        prepare_conversion(request, tmp_path)
+    extract.assert_not_called()
+    ptts.TTS.assert_not_called()
+
+
+def test_default_voice_lists_no_other_language(tmp_path, ptts):
+    """A missing default fails and never switches to an English voice."""
+    ptts.catalog_voices.return_value = [
+        {"name": "Zoey", "voice_id": ZOEY, "language": "en"},
+        {"name": "Anton", "voice_id": ANTON, "language": "de"},
+    ]
+    request = ConversionRequest(
+        text="Hallo.", language="de", output=tmp_path / "audio.m4a"
+    )
+    with pytest.raises(ValueError, match="default German \\(de\\) voice 'Nele'"):
+        prepare_conversion(request, tmp_path)
+
+
 class RecordingWriter(PCMWriter):
     """Record each write so tests can check the order of generation."""
 
@@ -148,19 +264,24 @@ def frames(events, name, sizes, failure=None):
 
 
 def test_frames_stream_to_pcm_with_sample_boundaries(tmp_path, monkeypatch):
-    """Three frames over two chapters give sample-derived chapter bounds."""
+    """Two German voices rotate per chapter with sample-derived chapter bounds."""
     request = ConversionRequest(
-        text="## One\n\nFirst.\n\n## Two\n\nSecond.",
-        voices=("af_bella", "am_adam"),
+        text="## One\n\nErstens.\n\n## Two\n\nZweitens.",
+        language="de",
+        voices=("Nele", "Anton"),
         output=tmp_path / "audio.m4b",
         chapter_level=2,
     )
     prepared = prepare_conversion(request, tmp_path)
+    assert prepared.voices == (
+        Voice("Nele", NELE, "de", "Nele test voice."),
+        Voice("Anton", ANTON, "de", "Anton test voice."),
+    )
     events = []
-    model = tts.load_tts(language="en", report=Mock())
+    model = tts.load_tts(language="de", report=Mock())
     model.frames = {
-        "af_bella": frames(events, "generate", [1000, 920]),
-        "am_adam": frames(events, "generate", [2400]),
+        NELE: frames(events, "generate", [1000, 920]),
+        ANTON: frames(events, "generate", [2400]),
     }
     monkeypatch.setattr(service, "load_tts", lambda **kwargs: model)
     monkeypatch.setattr(RecordingWriter, "events", events)
@@ -201,8 +322,8 @@ def test_frames_stream_to_pcm_with_sample_boundaries(tmp_path, monkeypatch):
         ("encoding", 2),
     ]
     assert [(text, voice) for text, voice, _ in model.streams] == [
-        ("One\n\nFirst.", "af_bella"),
-        ("Two\n\nSecond.", "am_adam"),
+        ("One\n\nErstens.", NELE),
+        ("Two\n\nZweitens.", ANTON),
     ]
     assert all(stream.closed for _, _, stream in model.streams)
 
@@ -215,7 +336,7 @@ def test_stream_closes_without_publication(tmp_path, monkeypatch, failure):
     events = []
     model = tts.load_tts(language="en", report=Mock())
     error = RuntimeError("decoder failure") if failure == "error" else None
-    model.frames = {"af_bella": frames(events, "generate", [1920, 1920], error)}
+    model.frames = {ZOEY: frames(events, "generate", [1920, 1920], error)}
     monkeypatch.setattr(service, "load_tts", lambda **kwargs: model)
     monkeypatch.setattr(RecordingWriter, "events", events)
     monkeypatch.setattr(service, "PCMWriter", RecordingWriter)

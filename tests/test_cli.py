@@ -11,6 +11,14 @@ from simple_tts.cli import app, format_duration
 from tests.workers import one_frame
 
 runner = CliRunner()
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+NELE = "2A2fFf8SkDEJ8nzx"
+ANTON = "3ZKKapPOvuWFcw9f"
+
+
+def plain(output):
+    """Remove ANSI codes and borders, and join wrapped table and help lines."""
+    return " ".join(ANSI.sub("", output).replace("│", " ").split())
 
 
 class TestFormatDuration:
@@ -49,15 +57,48 @@ class TestCLIVersion:
 class TestCLIVoices:
     """Tests for the voices command."""
 
-    def test_voices_command(self):
-        """Test that voices command lists available voices."""
+    def test_voices_command(self, ptts):
+        """The command lists catalogue voices of the four languages only."""
         result = runner.invoke(app, ["voices"])
-        assert result.exit_code == 0
-        # Strip ANSI codes for checking
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        clean = ansi_escape.sub("", result.stdout)
-        assert "af_bella" in clean
-        assert "English" in clean
+        assert result.exit_code == 0, result.output
+        clean = plain(result.stdout)
+        for name in ["Zoey (default)", "Hadley", "Nele (default)", "Anton"]:
+            assert name in clean
+        assert "Noa (default)" in clean
+        assert "Noémie (default)" in clean
+        assert "Hadley (default)" not in clean
+        assert NELE in clean
+        assert "German (de)" in clean
+        assert "Nele test voice." in clean
+        assert "Manuela-Lu" not in clean
+        assert "af_bella" not in clean
+        ptts.catalog_voices.assert_called_once_with()
+        ptts.TTS.assert_not_called()
+
+    def test_voices_filter_by_language(self):
+        """A language filter shows only the voices of that language."""
+        result = runner.invoke(app, ["voices", "--language", "DE"])
+        assert result.exit_code == 0, result.output
+        clean = plain(result.stdout)
+        assert "Nele" in clean
+        assert "Anton" in clean
+        assert "Zoey" not in clean
+
+    @pytest.mark.parametrize("arguments", [["--language", "it"], ["-l", "pt"]])
+    def test_voices_rejects_other_languages(self, arguments):
+        """Unsupported languages give an error."""
+        result = runner.invoke(app, ["voices", *arguments])
+        assert result.exit_code == 1
+        assert "Unsupported language" in plain(result.output)
+
+    def test_voices_without_catalogue(self, ptts):
+        """An uncached catalogue without network gives a clear error."""
+        ptts.catalog_voices.side_effect = OSError("cannot fetch voices.jsonl")
+        result = runner.invoke(app, ["voices"])
+        assert result.exit_code == 1
+        clean = plain(result.output)
+        assert "voice catalogue" in clean
+        assert "Connect to the internet once" in clean
 
 
 class TestCLIConvert:
@@ -74,10 +115,24 @@ class TestCLIConvert:
         assert result.exit_code == 0
         assert "Prepared input" in result.stdout
         assert "PDF" not in result.stdout
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
-        clean = ansi_escape.sub("", result.stdout)
+        clean = plain(result.stdout)
         assert "--voice" in clean
         assert "--yes" in clean
+        assert "--language" in clean
+        assert "en, de, es, or fr" in clean
+        assert "--duration-delta" in clean
+        assert "-0.3<=x<=0.3" in clean
+        assert "--speed" not in clean
+        assert "af_bella" not in clean
+        assert "Kokoro" not in clean
+
+    def test_app_help_names_phonon(self):
+        """The top-level help names the new engine."""
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        clean = plain(result.stdout)
+        assert "Phonon 40M Multilingual" in clean
+        assert "Kokoro" not in clean
 
 
 class TestCLICheckDeps:
@@ -180,9 +235,21 @@ def test_output_format_resolution(
         ["--chapter-level", "0"],
         ["--chapter-level", "7"],
         ["--voice", ""],
-        ["--voice", "af_bella,"],
-        ["--voice", "af_bella,unknown"],
-        ["--voice", "af_bella,bf_emma"],
+        ["--voice", "Zoey,"],
+        ["--voice", "Zoey,unknown"],
+        ["--voice", "af_bella"],
+        ["--voice", "Zoey", "--language", "de"],
+        ["--voice", "Nele,Zoey", "--language", "de"],
+        ["--voice", "nbpkqmvs3cjeq2j8"],
+        ["--language", "it"],
+        ["--language", "pt"],
+        ["--language", "de-DE"],
+        ["--duration-delta", "0.31"],
+        ["--duration-delta", "-0.5"],
+        ["--duration-delta", "nan"],
+        ["--duration-delta", "fast"],
+        ["--speed", "1.2"],
+        ["-s", "1.2"],
         ["--no-vtt"],
         ["--vtt"],
         ["--split"],
@@ -201,6 +268,79 @@ def test_rejected_options_precede_synthesis(conversion, monkeypatch, arguments):
     assert result.exit_code != 0
     extract.assert_not_called()
     load.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["--voice", "Zoey", "--language", "de"], "'Zoey' is English (en)"),
+        (["--voice", "Unknown"], "Unknown voice 'Unknown'"),
+        (["--language", "it"], "Unsupported language 'it'"),
+        (["--duration-delta", "nan"], "Duration delta must be from -0.3"),
+    ],
+)
+def test_option_errors_explain_the_fix(conversion, arguments, message):
+    """Voice, language, and rate errors name the problem."""
+    service, source = conversion
+    result = runner.invoke(app, ["convert", str(source), "-y", *arguments])
+    assert result.exit_code == 1
+    assert message in plain(result.output)
+
+
+@pytest.mark.parametrize(
+    ("language", "name", "voice_id"),
+    [
+        (None, "Zoey", "NbpkqMVS3CJeq2j8"),
+        ("en", "Zoey", "NbpkqMVS3CJeq2j8"),
+        ("de", "Nele", NELE),
+        ("es", "Noa", "b6FvJAiokjdqIti4"),
+        ("FR", "Noémie", "FXxJ9mANRq6BCTX5"),
+    ],
+)
+def test_default_voice_follows_language(
+    conversion, monkeypatch, ptts, language, name, voice_id
+):
+    """An omitted voice selects the native default voice of the language."""
+    from simple_tts import tts
+
+    service, source = conversion
+    monkeypatch.setattr(service, "load_tts", tts.load_tts)
+    monkeypatch.setattr(
+        service, "encode_pcm", lambda pcm, output, *args: output.touch()
+    )
+    arguments = ["--language", language] if language else []
+    result = runner.invoke(app, ["convert", str(source), "-y", *arguments])
+    assert result.exit_code == 0, result.output
+    clean = plain(result.output)
+    code = (language or "en").lower()
+    assert f"Voice: {name}" in clean
+    assert f"({code})" in clean
+    assert ptts.TTS.call_args.kwargs["lang"] == code
+    assert ptts.TTS.call_args.kwargs["conditions"] == {"duration_delta": 0.0}
+
+
+@pytest.mark.parametrize("value", ["-0.3", "-0.15", "0.25", "0.3"])
+def test_duration_delta_reaches_ptts(conversion, monkeypatch, ptts, value):
+    """The rate option becomes the native ptts duration condition."""
+    from simple_tts import tts
+
+    service, source = conversion
+    monkeypatch.setattr(service, "load_tts", tts.load_tts)
+    monkeypatch.setattr(
+        service, "encode_pcm", lambda pcm, output, *args: output.touch()
+    )
+    result = runner.invoke(
+        app,
+        ["convert", str(source), "-y", "-l", "de", "--duration-delta", value],
+    )
+    assert result.exit_code == 0, result.output
+    ptts.TTS.assert_called_once()
+    assert ptts.TTS.call_args.kwargs == {
+        "device": "cpu",
+        "quant": "q8",
+        "lang": "de",
+        "conditions": {"duration_delta": float(value)},
+    }
 
 
 @pytest.mark.parametrize("format_type", ["m4a", "m4b", "mp4", "mp3", "wav", "opus"])
@@ -442,7 +582,7 @@ def test_voice_rotation_reuses_one_model(conversion, monkeypatch):
     spoken = []
     engine = object()
 
-    def load(*, language, device, report):
+    def load(*, language, device, duration_delta, report):
         loaded.append(language)
         return engine
 
@@ -457,11 +597,13 @@ def test_voice_rotation_reuses_one_model(conversion, monkeypatch):
         service, "encode_pcm", lambda pcm, output, *args: output.touch()
     )
     result = runner.invoke(
-        app, ["convert", str(source), "--voice", " af_bella, am_adam ", "-y"]
+        app,
+        ["convert", str(source), "--language", "de", "-v", " Nele, anton ", "-y"],
     )
     assert result.exit_code == 0, result.output
-    assert loaded == ["en"]
-    assert spoken == ["af_bella"] * 2 + ["am_adam"] * 2 + ["af_bella"] * 2
+    assert "Voice: Nele, Anton" in plain(result.output)
+    assert loaded == ["de"]
+    assert spoken == [NELE] * 2 + [ANTON] * 2 + [NELE] * 2
 
 
 def test_output_directory_collision_precedes_synthesis(conversion, monkeypatch):
@@ -489,11 +631,27 @@ def test_confirmation_lists_each_narrator(conversion, monkeypatch):
     )
     monkeypatch.setattr(service, "encode_pcm", lambda pcm, path, *args: path.touch())
     result = runner.invoke(
-        app, ["convert", str(source), "--voice", "af_bella,am_adam"], input="\n"
+        app,
+        [
+            "convert",
+            str(source),
+            "--language",
+            "de",
+            "--voice",
+            "Nele,Anton",
+            "--duration-delta",
+            "-0.1",
+        ],
+        input="\n",
     )
     assert result.exit_code == 0, result.output
-    assert "af_bella (American female voice)" in result.output
-    assert "am_adam (American male voice)" in result.output
+    clean = plain(result.output)
+    assert "Language German (de)" in clean
+    assert f"Nele ({NELE}): Nele test voice." in clean
+    assert f"Anton ({ANTON}): Anton test voice." in clean
+    assert "Duration Delta -0.1" in clean
+    # Only the summary's speed ratio remains. The speed setting is gone.
+    assert clean.count("Speed") == clean.count("Speed Ratio") == 1
 
 
 @pytest.mark.parametrize(
@@ -594,9 +752,12 @@ assert runner.invoke(app, ['version']).exit_code == 0
 source = Path(sys.argv[1]) / 'input.md'
 source.write_text('Hello.')
 from contextlib import contextmanager
+from simple_tts import voices
 @contextmanager
 def stream(*args, **kwargs):
     yield iter([np.zeros(2400, dtype=np.float32)])
+# Never read the real voice catalogue in a test process.
+voices.load_catalog = lambda: [voices.Voice('Zoey', 'NbpkqMVS3CJeq2j8', 'en')]
 service.load_tts = lambda **kwargs: object()
 service.stream_speech = stream
 converted = runner.invoke(app, ['convert', str(source), '-y'])

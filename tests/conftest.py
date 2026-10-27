@@ -63,12 +63,30 @@ class FakeTTS:
         return stream
 
 
+# A small copy of the pinned catalogue metadata, with one unsupported language.
+CATALOG = [
+    {"name": "Zoey", "voice_id": "NbpkqMVS3CJeq2j8", "language": "en"},
+    {"name": "Hadley", "voice_id": "bXwrkHhURL1VFJdG", "language": "en"},
+    {"name": "Nele", "voice_id": "2A2fFf8SkDEJ8nzx", "language": "de"},
+    {"name": "Anton", "voice_id": "3ZKKapPOvuWFcw9f", "language": "de"},
+    {"name": "Noa", "voice_id": "b6FvJAiokjdqIti4", "language": "es"},
+    {"name": "Noémie", "voice_id": "FXxJ9mANRq6BCTX5", "language": "fr"},
+    {"name": "Manuela-Lu", "voice_id": "KgC2Nqnjj48NUiyV", "language": "pt"},
+]
+
+
 def fake_ptts():
     """Return a ptts module with CPU support only."""
     return SimpleNamespace(
         TTS=Mock(side_effect=FakeTTS),
         available_devices=Mock(return_value=["cpu"]),
         set_num_threads=Mock(),
+        catalog_voices=Mock(
+            return_value=[
+                {**voice, "description": f"{voice['name']} test voice."}
+                for voice in CATALOG
+            ]
+        ),
     )
 
 

@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import call
 
 import pytest
 
@@ -14,13 +15,20 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
 from simple_tts import dependencies
-from simple_tts.jobs import JobManager
+from simple_tts.jobs import TERMINAL_STATES, JobManager
 from simple_tts.mcp import create_server
+from simple_tts.voices import DEFAULT_LANGUAGE, LANGUAGES
 from tests.test_jobs import assert_clean, wait_for
-from tests.workers import failing_worker, mock_worker, slow_worker
+from tests.workers import (
+    engine_worker,
+    failing_worker,
+    metal_engine_worker,
+    mock_worker,
+    slow_worker,
+)
 
 
-def test_discovery_schemas_and_defaults(tmp_path):
+def test_discovery_schemas_and_defaults(tmp_path, ptts):
     """FastMCP exposes five ordinary tools with typed inputs and outputs."""
 
     async def scenario():
@@ -35,11 +43,14 @@ def test_discovery_schemas_and_defaults(tmp_path):
             }
             schema = tools["start_conversion"].input_schema
             props = schema["properties"]
-            assert props["voices"]["default"] == ["af_bella"]
-            assert props["voices"]["minItems"] == 1
-            assert props["speed"]["default"] == 1.1
-            assert props["speed"]["minimum"] == 0.5
-            assert props["speed"]["maximum"] == 2.0
+            assert props["language"]["default"] == DEFAULT_LANGUAGE
+            assert props["language"]["enum"] == list(LANGUAGES)
+            assert props["voices"]["default"] == []
+            assert "minItems" not in props["voices"]
+            assert props["duration_delta"]["default"] == 0.0
+            assert props["duration_delta"]["minimum"] == -0.3
+            assert props["duration_delta"]["maximum"] == 0.3
+            assert "speed" not in props
             assert props["chapter_level"]["default"] == 1
             assert props["chapter_level"]["minimum"] == 1
             assert props["chapter_level"]["maximum"] == 6
@@ -49,16 +60,66 @@ def test_discovery_schemas_and_defaults(tmp_path):
             assert props["output"]["default"] is None
             for tool in tools.values():
                 assert tool.output_schema is not None
-            voices = (await client.call_tool("list_voices")).structured_content[
-                "voices"
-            ]
-            assert {
-                "id": "af_bella",
-                "language": "English (US)",
-                "description": "American female voice",
-            } in voices
+            # Startup and discovery read no catalogue and load no model.
+            ptts.catalog_voices.assert_not_called()
+            ptts.TTS.assert_not_called()
             deps = (await client.call_tool("check_dependencies")).structured_content
             assert deps == {"pandoc": True, "ffmpeg": True}
+
+    asyncio.run(scenario())
+
+
+def test_list_voices_reads_only_catalogue_metadata(tmp_path, ptts):
+    """Voice discovery reports languages and voices without model weights."""
+
+    async def scenario():
+        async with Client(create_server(tmp_path)) as client:
+            catalog = (await client.call_tool("list_voices")).structured_content
+            assert catalog["languages"] == [
+                {"code": "en", "name": "English", "default_voice": "Zoey"},
+                {"code": "de", "name": "German", "default_voice": "Nele"},
+                {"code": "es", "name": "Spanish", "default_voice": "Noa"},
+                {"code": "fr", "name": "French", "default_voice": "Noémie"},
+            ]
+            assert {
+                "name": "Nele",
+                "id": "2A2fFf8SkDEJ8nzx",
+                "language": "de",
+                "description": "Nele test voice.",
+                "default": True,
+            } in catalog["voices"]
+            assert [voice["name"] for voice in catalog["voices"]] == [
+                "Hadley",
+                "Zoey",
+                "Anton",
+                "Nele",
+                "Noa",
+                "Noémie",
+            ]
+            german = (
+                await client.call_tool("list_voices", {"language": "de"})
+            ).structured_content["voices"]
+            assert [(voice["name"], voice["default"]) for voice in german] == [
+                ("Anton", False),
+                ("Nele", True),
+            ]
+            with pytest.raises(ToolError):
+                await client.call_tool("list_voices", {"language": "pt"})
+
+    asyncio.run(scenario())
+    # The pinned default catalogue needs no argument. No weights load.
+    assert ptts.catalog_voices.call_args_list == [call(), call()]
+    ptts.TTS.assert_not_called()
+
+
+def test_list_voices_without_catalogue_is_a_tool_error(tmp_path, ptts):
+    """An uncached catalogue offline gives a clear tool error."""
+    ptts.catalog_voices.side_effect = OSError("cannot fetch voices.jsonl")
+
+    async def scenario():
+        async with Client(create_server(tmp_path)) as client:
+            with pytest.raises(ToolError, match="Connect to the internet once"):
+                await client.call_tool("list_voices")
 
     asyncio.run(scenario())
 
@@ -107,11 +168,16 @@ def test_tool_conversion_and_polling(tmp_path, source):
         {},
         {"input_file": "book.md", "text": "Hello."},
         {"text": ""},
-        {"text": "Hello.", "voices": []},
-        {"text": "Hello.", "voices": ["unknown"]},
-        {"text": "Hello.", "voices": ["af_bella", "bf_emma"]},
-        {"text": "Hello.", "speed": 0.4},
-        {"text": "Hello.", "speed": 2.1},
+        {"text": "Hello.", "voices": [""]},
+        {"text": "Hello.", "voices": ["Nele,Anton"]},
+        {"text": "Hello.", "voices": "Zoey"},
+        {"text": "Hello.", "language": "it"},
+        {"text": "Hello.", "language": "pt"},
+        {"text": "Hello.", "language": "DE"},
+        {"text": "Hello.", "duration_delta": -0.31},
+        {"text": "Hello.", "duration_delta": 0.5},
+        {"text": "Hello.", "duration_delta": "fast"},
+        {"text": "Hello.", "speed": 1.1},
         {"text": "Hello.", "chapter_level": 7},
         {"text": "Hello.", "chapter_level": 1.5},
         {"text": "Hello.", "device": "gpu"},
@@ -137,6 +203,97 @@ def test_request_failures_are_tool_errors(tmp_path, arguments):
             assert manager.records == {}
 
     asyncio.run(scenario())
+
+
+async def run_job(client, manager, arguments):
+    """Start one job and return its terminal status."""
+    start = (await client.call_tool("start_conversion", arguments)).structured_content
+    assert start["state"] == "running"
+    await wait_for(manager, start["job_id"], lambda job: job.state in TERMINAL_STATES)
+    return (
+        await client.call_tool("get_conversion", {"job_id": start["job_id"]})
+    ).structured_content
+
+
+@pytest.mark.parametrize(
+    ("worker", "device", "backend"),
+    [
+        (engine_worker, "auto", {"device": "cpu", "quant": "q8"}),
+        (engine_worker, "cpu", {"device": "cpu", "quant": "q8"}),
+        (metal_engine_worker, "auto", {"device": "cpu", "quant": "q8"}),
+        (metal_engine_worker, "mps", {"device": "metal", "quant": "f32"}),
+        (engine_worker, "mps", None),
+        (metal_engine_worker, "cuda", None),
+    ],
+)
+def test_job_language_rate_and_device_reach_ptts(
+    tmp_path, ptts, worker, device, backend
+):
+    """Auto uses CPU/q8. MPS uses Metal/f32 or fails without a fallback."""
+
+    async def scenario():
+        manager = JobManager(tmp_path, worker=worker)
+        async with Client(create_server(tmp_path, manager=manager)) as client:
+            status = await run_job(
+                client,
+                manager,
+                {
+                    "text": "# Eins\n\nHallo.\n\n# Zwei\n\nTschüss.",
+                    "language": "de",
+                    "voices": ["Nele", "anton"],
+                    "duration_delta": -0.2,
+                    "device": device,
+                },
+            )
+        record = json.loads((tmp_path / "ptts.json").read_text())
+        if backend is None:
+            assert status["state"] == "failed"
+            assert f"Requested device '{device}' is unavailable" in status["error"]
+            assert record == {"loads": [], "voices": []}
+        else:
+            assert status["state"] == "succeeded", status
+            assert record["loads"] == [
+                {
+                    **backend,
+                    "lang": "de",
+                    "conditions": {"duration_delta": -0.2},
+                }
+            ]
+            assert record["voices"] == ["2A2fFf8SkDEJ8nzx", "3ZKKapPOvuWFcw9f"]
+            assert [chapter["title"] for chapter in status["result"]["chapters"]] == [
+                "Eins",
+                "Zwei",
+            ]
+        assert_clean(tmp_path)
+
+    asyncio.run(scenario())
+    # Submission validates syntax only. The worker reads the catalogue.
+    ptts.catalog_voices.assert_not_called()
+    ptts.TTS.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({"voices": ["Unknown"]}, "Unknown voice 'Unknown'"),
+        ({"language": "de", "voices": ["Zoey"]}, "'Zoey' is English (en)"),
+        ({"language": "fr", "voices": ["Noémie", "Noa"]}, "'Noa' is Spanish (es)"),
+    ],
+)
+def test_voice_errors_are_job_status_data(tmp_path, ptts, arguments, message):
+    """The worker rejects unknown and mismatched voices after submission."""
+
+    async def scenario():
+        manager = JobManager(tmp_path, worker=mock_worker)
+        async with Client(create_server(tmp_path, manager=manager)) as client:
+            status = await run_job(client, manager, {"text": "Hello.", **arguments})
+            assert status["state"] == "failed"
+            assert message in status["error"]
+            assert status["result"] is None
+        assert_clean(tmp_path)
+
+    asyncio.run(scenario())
+    ptts.catalog_voices.assert_not_called()
 
 
 def test_missing_dependencies_are_tool_errors(tmp_path, monkeypatch):

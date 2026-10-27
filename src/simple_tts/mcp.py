@@ -14,25 +14,40 @@ from simple_tts import __version__
 from simple_tts.dependencies import DEPENDENCIES, is_command_available
 from simple_tts.jobs import JobManager, JobStatus, require_mcp_platform
 from simple_tts.service import ConversionRequest
-from simple_tts.voices import VOICES
+from simple_tts.tts import DURATION_DELTA_RANGE
+from simple_tts.voices import DEFAULT_VOICES, LANGUAGES, available_voices
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
 
+Language = Literal["en", "de", "es", "fr"]
+
+
+@dataclass(frozen=True)
+class LanguageDescription:
+    """A narration language and its default voice."""
+
+    code: str
+    name: str
+    default_voice: str
+
 
 @dataclass(frozen=True)
 class VoiceDescription:
-    """A supported Kokoro voice."""
+    """A Phonon catalogue voice."""
 
+    name: str
     id: str
     language: str
     description: str
+    default: bool
 
 
 @dataclass(frozen=True)
 class VoiceCatalog:
     """Structured voice discovery output."""
 
+    languages: list[LanguageDescription]
     voices: list[VoiceDescription]
 
 
@@ -41,6 +56,7 @@ def create_server(workspace: Path, *, manager: JobManager | None = None) -> Fast
     require_mcp_platform()
 
     import anyio
+    import anyio.to_thread
     from fastmcp import FastMCP
     from fastmcp.exceptions import ToolError
 
@@ -60,6 +76,7 @@ def create_server(workspace: Path, *, manager: JobManager | None = None) -> Fast
         instructions=(
             "Convert prepared documents or Markdown text to local audio. "
             "Start one job, poll get_conversion, and cancel it when needed. "
+            "Select one narration language per job. Voices must match it. "
             "Paths are relative to the configured workspace. "
             "File URIs require access to the local filesystem."
         ),
@@ -69,10 +86,31 @@ def create_server(workspace: Path, *, manager: JobManager | None = None) -> Fast
     )
 
     @server.tool(annotations={"readOnlyHint": True})
-    async def list_voices() -> VoiceCatalog:
-        """Return voice IDs, languages, and descriptions."""
+    async def list_voices(language: Language | None = None) -> VoiceCatalog:
+        """Return narration languages and catalogue voices with descriptions.
+
+        Read only the voice catalogue metadata. Load no model or voice weights.
+        """
+        try:
+            # The first use can download the catalogue, so keep the loop free.
+            voices = await anyio.to_thread.run_sync(available_voices, language)
+        except (ValueError, RuntimeError) as error:
+            raise ToolError(str(error)) from error
         return VoiceCatalog(
-            [VoiceDescription(voice, **info) for voice, info in sorted(VOICES.items())]
+            [
+                LanguageDescription(code, name, DEFAULT_VOICES[code])
+                for code, name in LANGUAGES.items()
+            ],
+            [
+                VoiceDescription(
+                    voice.name,
+                    voice.voice_id,
+                    voice.language,
+                    voice.description,
+                    voice.is_default,
+                )
+                for voice in voices
+            ],
         )
 
     @server.tool(annotations={"readOnlyHint": True})
@@ -84,8 +122,11 @@ def create_server(workspace: Path, *, manager: JobManager | None = None) -> Fast
     async def start_conversion(
         input_file: str | None = None,
         text: str | None = None,
-        voices: Annotated[list[str], Field(min_length=1)] = ["af_bella"],
-        speed: Annotated[float, Field(ge=0.5, le=2.0)] = 1.1,
+        language: Language = "en",
+        voices: list[str] = [],
+        duration_delta: Annotated[
+            float, Field(ge=DURATION_DELTA_RANGE[0], le=DURATION_DELTA_RANGE[1])
+        ] = 0.0,
         format: str | None = None,
         output: str | None = None,
         chapter_level: Annotated[int, Field(ge=1, le=6)] = 1,
@@ -94,15 +135,20 @@ def create_server(workspace: Path, *, manager: JobManager | None = None) -> Fast
         """Start one conversion from exactly one document path or Markdown text.
 
         Poll get_conversion for progress and the final local file URI.
-        All voices must share one language code. Existing outputs are rejected.
+        Voices are catalogue names or voice IDs and rotate once per chapter.
+        Omit voices to use the default voice of the language.
+        The job fails when a voice is unknown or has another language.
+        Negative duration_delta values speak faster, positive values slower.
+        Existing outputs are rejected.
         """
         try:
             return jobs.start(
                 ConversionRequest(
                     input_file=Path(input_file) if input_file is not None else None,
                     text=text,
+                    language=language,
                     voices=tuple(voices),
-                    speed=speed,
+                    duration_delta=duration_delta,
                     format_type=format,
                     output=Path(output) if output is not None else None,
                     chapter_level=chapter_level,

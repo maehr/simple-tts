@@ -1,10 +1,11 @@
 """Command-line interface for simple-tts.
 
-A simple CLI for converting documents to speech using Kokoro TTS.
+A simple CLI for converting documents to speech with Phonon 40M Multilingual.
 
 Example:
-    $ simple-tts convert document.md --voice af_bella
-    $ simple-tts voices
+    $ simple-tts convert document.md --language de
+    $ simple-tts convert document.md --language de --voice Nele,Anton
+    $ simple-tts voices --language de
     $ simple-tts check-deps
 """
 
@@ -15,6 +16,7 @@ from typing import Annotated, Optional
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -37,15 +39,24 @@ from simple_tts.service import (
     PreparedConversion,
     ProgressEvent,
     execute_conversion,
-    parse_voices,
     prepare_conversion,
     validate_request,
 )
-from simple_tts.voices import VOICES, get_voice_info
+from simple_tts.tts import DURATION_DELTA_RANGE
+from simple_tts.voices import (
+    DEFAULT_LANGUAGE,
+    LANGUAGES,
+    available_voices,
+    check_language,
+    parse_voices,
+)
 
 app = typer.Typer(
     name="simple-tts",
-    help="Convert prepared text and structured documents to speech using Kokoro TTS.",
+    help=(
+        "Convert prepared text and structured documents to speech "
+        "with Phonon 40M Multilingual."
+    ),
     add_completion=False,
 )
 console = Console()
@@ -76,27 +87,34 @@ def format_duration(seconds: float) -> str:
     return " ".join(parts)
 
 
-def display_checkpoint(
-    input_file: Path,
-    output: Path,
-    voice: str,
-    speed: float,
-    format_type: str,
-    chunks: list[str],
-    text_length: int,
-) -> None:
+def language_label(code: str) -> str:
+    """Return a language name with its code.
+
+    Example:
+        >>> language_label("de")
+        'German (de)'
+    """
+    return f"{LANGUAGES[code]} ({code})"
+
+
+def display_checkpoint(prepared: PreparedConversion) -> None:
     """Display checkpoint before TTS inference."""
+    request = prepared.request
+    chunks = prepared.chunks
+    text_length = sum(len(section.text) for section in prepared.document.sections)
     config_table = Table(title="TTS Configuration", show_header=False)
     config_table.add_column("Parameter", style="cyan")
     config_table.add_column("Value", style="green")
 
-    config_table.add_row("Input File", str(input_file))
-    config_table.add_row("Output File", str(output))
-    for voice_id in voice.split(","):
-        description = get_voice_info(voice_id)["description"]
-        config_table.add_row("Voice", f"{voice_id} ({description})")
-    config_table.add_row("Speed", f"{speed}x")
-    config_table.add_row("Format", format_type)
+    config_table.add_row("Input File", escape(str(request.input_file)))
+    config_table.add_row("Output File", escape(str(prepared.output)))
+    config_table.add_row("Language", language_label(request.language))
+    for voice in prepared.voices:
+        config_table.add_row(
+            "Voice", escape(f"{voice.name} ({voice.voice_id}): {voice.description}")
+        )
+    config_table.add_row("Duration Delta", f"{request.duration_delta:g}")
+    config_table.add_row("Format", prepared.format_type)
     config_table.add_row("Text Length", f"{text_length:,} characters")
     config_table.add_row("Chunks", str(len(chunks)))
 
@@ -134,24 +152,37 @@ def convert(
             resolve_path=True,
         ),
     ],
-    voice: Annotated[
+    language: Annotated[
         str,
+        typer.Option("--language", "-l", help="Narration language: en, de, es, or fr."),
+    ] = DEFAULT_LANGUAGE,
+    voice: Annotated[
+        Optional[str],
         typer.Option(
             "--voice",
             "-v",
-            help="Voice IDs separated by commas. Rotate once per chapter.",
+            help=(
+                "Catalogue voice names or IDs, separated by commas. Rotate once "
+                "per chapter. Default: the default voice of the language."
+            ),
+            show_default=False,
         ),
-    ] = "af_bella",
+    ] = None,
     output: Annotated[
         Optional[Path],
         typer.Option(
             "--output", "-o", help="Output path. The suffix selects the format."
         ),
     ] = None,
-    speed: Annotated[
+    duration_delta: Annotated[
         float,
-        typer.Option("--speed", "-s", help="Speech speed.", min=0.5, max=2.0),
-    ] = 1.1,
+        typer.Option(
+            "--duration-delta",
+            help="Speaking rate. Negative values speak faster, positive slower.",
+            min=DURATION_DELTA_RANGE[0],
+            max=DURATION_DELTA_RANGE[1],
+        ),
+    ] = 0.0,
     format_type: Annotated[
         Optional[str],
         typer.Option(
@@ -172,7 +203,13 @@ def convert(
     ] = 1,
     device: Annotated[
         str,
-        typer.Option("--device", help="Device: auto, cuda, mps, or cpu."),
+        typer.Option(
+            "--device",
+            help=(
+                "Device: auto or cpu (CPU, 8-bit weights), "
+                "mps (Metal, f32), or cuda (f32)."
+            ),
+        ),
     ] = "auto",
     yes: Annotated[
         bool,
@@ -182,30 +219,29 @@ def convert(
     """Convert a document to speech with optional chapters and voice rotation."""
     total_start = time.time()
     try:
-        selected_voices = parse_voices(voice)
-        voice = ",".join(selected_voices)
         request = ConversionRequest(
             input_file=input_file,
-            voices=tuple(selected_voices),
+            language=check_language(language),
+            voices=parse_voices(voice) if voice is not None else (),
+            duration_delta=duration_delta,
             output=output,
             format_type=format_type,
-            speed=speed,
             chapter_level=chapter_level,
             device=device,
         )
         output, format_type = validate_request(request)
     except ValueError as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        console.print("Error:", str(e), style="bold red", markup=False)
         raise typer.Exit(1) from e
 
-    console.print(f"[bold blue]Input:[/] {input_file}")
-    console.print(f"[bold blue]Output:[/] {output}")
-    console.print(f"[bold blue]Voice:[/] {voice}")
+    console.print(f"[bold blue]Input:[/] {escape(str(input_file))}")
+    console.print(f"[bold blue]Output:[/] {escape(str(output))}")
+    console.print(f"[bold blue]Language:[/] {language_label(request.language)}")
 
     try:
         with tempfile.TemporaryDirectory(prefix="simple-tts-") as scratch:
             prepared = prepare_conversion(request, Path(scratch))
-            result = _convert_prepared(prepared, Path(scratch), yes, voice)
+            result = _convert_prepared(prepared, Path(scratch), yes)
     except KeyboardInterrupt:
         console.print("[yellow]Cancelled.[/yellow]")
         raise typer.Exit(130) from None
@@ -219,27 +255,21 @@ def convert(
 
 
 def _convert_prepared(
-    prepared: PreparedConversion, scratch: Path, yes: bool, voice: str
+    prepared: PreparedConversion, scratch: Path, yes: bool
 ) -> ConversionResult:
     request = prepared.request
     input_file = request.input_file
     assert input_file is not None
     output = prepared.output
+    names = ", ".join(voice.name for voice in prepared.voices)
+    console.print(f"[bold blue]Voice:[/] {escape(names)}")
     if not prepared.document.matched_headings:
         console.print(
             f"[yellow]Warning: No headings match level {request.chapter_level}. "
             f"Use one chapter named '{input_file.stem}'.[/yellow]"
         )
     if not yes:
-        display_checkpoint(
-            input_file,
-            output,
-            voice,
-            request.speed,
-            prepared.format_type,
-            prepared.chunks,
-            sum(len(section.text) for section in prepared.document.sections),
-        )
+        display_checkpoint(prepared)
         console.print(
             Panel(
                 "Press Enter to start synthesis. Press Ctrl+C to cancel.",
@@ -325,15 +355,38 @@ def mcp(
 
 
 @app.command()
-def voices() -> None:
-    """List available voices."""
-    table = Table(title="Available Voices")
-    table.add_column("Voice ID", style="cyan")
+def voices(
+    language: Annotated[
+        Optional[str],
+        typer.Option(
+            "--language",
+            "-l",
+            help="Show only the voices of one language: en, de, es, or fr.",
+            show_default=False,
+        ),
+    ] = None,
+) -> None:
+    """List catalogue voices for each narration language."""
+    try:
+        catalog = available_voices(language)
+    except (ValueError, RuntimeError) as e:
+        console.print("Error:", str(e), style="bold red", markup=False)
+        raise typer.Exit(1) from e
+
+    table = Table(title="Phonon Voices")
+    table.add_column("Name", style="cyan")
+    table.add_column("Voice ID", style="magenta")
     table.add_column("Language", style="green")
     table.add_column("Description", style="white")
 
-    for voice_id, info in sorted(VOICES.items()):
-        table.add_row(voice_id, info["language"], info["description"])
+    for voice in catalog:
+        name = f"{voice.name} (default)" if voice.is_default else voice.name
+        table.add_row(
+            escape(name),
+            escape(voice.voice_id),
+            language_label(voice.language),
+            escape(voice.description),
+        )
 
     console.print(table)
 
