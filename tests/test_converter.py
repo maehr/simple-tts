@@ -396,6 +396,52 @@ def test_narration_skips_urls_and_soft_hyphens(tmp_path, markdown, expected):
     assert [section.text for section in result.sections] == [expected]
 
 
+@pytest.mark.parametrize(
+    ("markdown", "expected"),
+    [
+        ("Word^1^. Next^14^, and^3,4^.", "Word. Next, and."),
+        ("Teams reuse records^102^ daily.", "Teams reuse records daily."),
+        ("In March 2026^97^.", "In March 2026."),
+        ("(Smith 2025)^2^ and AI^14^.", "(Smith 2025) and AI."),
+        ("See Article 24d^99^ of 2012/28/EU^83^.", "See Article 24d of 2012/28/EU."),
+        ("Early **reuse**^1^ matters.", "Early reuse matters."),
+        ("A note[^1] here.\n\n[^1]: The note.", "A note here."),
+        ("Area 5 m^2^, 3 km^2^, and 10^6^.", "Area 5 m², 3 km², and 10⁶."),
+    ],
+)
+def test_narration_skips_footnote_markers(tmp_path, markdown, expected):
+    """Speech omits note markers but keeps units and powers of ten."""
+    source = tmp_path / "notes.md"
+    source.write_text(markdown, encoding="utf-8")
+    result = extract_sections(source)
+    assert [section.text for section in result.sections] == [expected]
+
+
+@pytest.mark.parametrize("suffix", [".md", ".docx"])
+def test_footnotes_are_not_spoken(tmp_path, suffix):
+    """Footnote text with several paragraphs stays out of every chapter."""
+    markdown = (
+        "# First\n\nBody[^a] text^7^.\n\n"
+        "[^a]: Note one.\n\n    Note two.\n\n"
+        "# Last\n\nEnd[^b].\n\n[^b]: Note three.\n"
+    )
+    source = tmp_path / f"book{suffix}"
+    if suffix == ".md":
+        source.write_text(markdown, encoding="utf-8")
+    else:
+        subprocess.run(
+            ["pandoc", "-f", "markdown", "-o", str(source)],
+            input=markdown,
+            text=True,
+            check=True,
+        )
+    result = extract_sections(source)
+    assert [section.text for section in result.sections] == [
+        "First\n\nBody text.",
+        "Last\n\nEnd.",
+    ]
+
+
 @pytest.mark.skipif(shutil.which("pandoc") is None, reason="Pandoc is not installed.")
 def test_page_markers_are_not_spoken(tmp_path):
     """Pandoc drops the HTML comments that pdf2md writes as page markers."""
