@@ -163,7 +163,9 @@ Use a local folder for work without a network.
 
 Input must contain readable prose in the correct order.
 Check the reading order before conversion.
-Remove unwanted text, such as page numbers, repeated headers, and footnotes.
+Remove unwanted text, such as page numbers and repeated headers.
+Narration skips footnotes and superscript note markers, such as `¹⁴`.
+Narration keeps short units and powers of ten, such as `km²` and `10⁶`.
 Markdown headings define chapters.
 
 Use one language for each document.

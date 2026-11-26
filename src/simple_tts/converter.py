@@ -11,6 +11,15 @@ from simple_tts.processes import run_command
 
 PANDOC_EXTENSIONS = {".epub", ".docx", ".md", ".qmd", ".rmd", ".txt", ".rst", ".html"}
 
+# Pandoc writes note definitions at the end, with indented continuation lines.
+_FOOTNOTE_DEFINITION = re.compile(
+    r"^\[\^[^\]\s]+\]:.*(?:\n(?:[ \t]*\n)*(?: {4}|\t).*)*", re.MULTILINE
+)
+_FOOTNOTE_REFERENCE = re.compile(r"\[\^[^\]\s]+\]")
+# Pandoc writes digit-only superscripts as Unicode and others as ^(...).
+_SUPERSCRIPT_NUMBER = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹]+|\^\([\d\s,;–—-]+\)")
+_POWER_BASE = re.compile(r"[a-z]{1,2}|10")
+
 
 @dataclass(frozen=True)
 class Section:
@@ -58,6 +67,7 @@ def extract_sections(
     """Convert once to Markdown, then split at the selected heading level.
 
     Pandoc normalizes input to ATX headings and indented code blocks.
+    Narration skips footnotes and superscript note markers.
     Sandbox mode limits reader access to the selected input file.
     """
     if not 1 <= chapter_level <= 6:
@@ -67,7 +77,7 @@ def extract_sections(
     args = [
         str(file_path),
         "-t",
-        "markdown_strict-raw_html",
+        "markdown_strict+footnotes-raw_html",
         "--wrap=none",
         "--markdown-headings=atx",
     ]
@@ -75,7 +85,7 @@ def extract_sections(
         args.extend(["-f", "markdown"])
     if sandbox:
         args.append("--sandbox")
-    markdown = _pandoc(args)
+    markdown = _FOOTNOTE_DEFINITION.sub("", _pandoc(args))
 
     def narration(text: str) -> str:
         # Keep link labels and inline text without Markdown delimiters.
@@ -90,6 +100,9 @@ def extract_sections(
             flags=re.IGNORECASE,
         )
         text = re.sub(r"`+([^`]+)`+", r"\1", text)
+        # Drop note markers first, because a superscript blocks emphasis removal.
+        text = _FOOTNOTE_REFERENCE.sub("", text)
+        text = _SUPERSCRIPT_NUMBER.sub(_drop_note_marker, text)
         text = re.sub(r"(?<![\w\\])([*_]{1,3})(\S(?:.*?\S)?)\1(?!\w)", r"\2", text)
         text = re.sub(r"\\([!\"#$%&'()*+,./:;<=>?@\[\\\]^{|}~_-])", r"\1", text)
         return normalize_text(html.unescape(text))
@@ -114,6 +127,21 @@ def extract_sections(
     if text:
         sections.append(Section(title if matches else file_path.stem, text))
     return ExtractedDocument(sections, matches)
+
+
+def _drop_note_marker(match: re.Match[str]) -> str:
+    """Drop a superscript note marker but keep units and powers of ten.
+
+    Examples:
+        >>> _SUPERSCRIPT_NUMBER.sub(_drop_note_marker, "teams¹⁴ in 2026⁹⁷")
+        'teams in 2026'
+        >>> _SUPERSCRIPT_NUMBER.sub(_drop_note_marker, "5 km² and 10⁶")
+        '5 km² and 10⁶'
+    """
+    base = re.search(r"\w+$", match.string[: match.start()])
+    if base and _POWER_BASE.fullmatch(base[0]):
+        return match[0]
+    return ""
 
 
 def normalize_text(text: str) -> str:
